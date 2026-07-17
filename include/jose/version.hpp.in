@@ -1,0 +1,26 @@
+#pragma once
+
+// Generated from version.hpp.in by CMake — do not edit.
+// The version is defined once, in the top-level CMakeLists.txt project() call.
+
+// clang-format off
+#define JOSE_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define JOSE_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define JOSE_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define JOSE_VERSION       "@PROJECT_VERSION@"
+// clang-format on
+
+namespace jose {
+
+struct version_info {
+    int major;
+    int minor;
+    int patch;
+};
+
+inline constexpr version_info version{JOSE_VERSION_MAJOR, JOSE_VERSION_MINOR,
+                                      JOSE_VERSION_PATCH};
+
+inline constexpr const char* version_string = JOSE_VERSION;
+
+} // namespace jose

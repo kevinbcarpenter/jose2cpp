@@ -1,4 +1,4 @@
-# jose-pp Implementation Plan
+# jose2cpp Implementation Plan
 
 ## Project Goal
 
@@ -22,7 +22,7 @@ A modern C++20 library implementing the JOSE (JSON Object Signing and Encryption
 ## Directory Structure
 
 ```
-jose-pp/
+jose2cpp/
 ├── CMakeLists.txt
 ├── vcpkg.json
 ├── include/
@@ -30,6 +30,7 @@ jose-pp/
 │       ├── jose.hpp              # umbrella header
 │       ├── base64url.hpp
 │       ├── error.hpp             # error types (std::expected based)
+│       ├── secure_bytes.hpp      # zeroing allocator + secure_bytes
 │       ├── algorithm.hpp         # algorithm enum + registry
 │       ├── jwk.hpp               # JWK / JWKSet
 │       ├── jws.hpp               # JWS sign/verify/parse
@@ -38,17 +39,20 @@ jose-pp/
 │       ├── header.hpp            # JOSE header types
 │       ├── async.hpp             # task<T>, async opaque interfaces
 │       └── crypto/
+│           ├── signing.hpp          # unified sign/verify (all JWS algs)
+│           ├── encryption.hpp       # unified encrypt/decrypt (all JWE enc algs)
+│           ├── keygen.hpp           # RSA/EC/OKP key generation, random_bytes
 │           ├── rsa.hpp
 │           ├── ec.hpp
-│           ├── eddsa.hpp
+│           ├── eddsa.hpp            # Ed25519 + Ed448
 │           ├── hmac.hpp
 │           ├── aes_kw.hpp
 │           ├── aes_gcm_kw.hpp
 │           ├── aes_cbc_hmac.hpp
 │           ├── aes_gcm.hpp
-│           ├── ecdh.hpp
+│           ├── ecdh.hpp             # incl. X25519/X448 key agreement
 │           ├── pbes2.hpp
-│           └── openssl_util.hpp  # RAII wrappers, secure_vector
+│           └── openssl_util.hpp  # RAII wrappers, error helpers
 │       └── optional/
 │           └── jwks_fetcher.hpp  # async JWKS URL fetcher (opt-in)
 ├── src/
@@ -60,17 +64,20 @@ jose-pp/
 │   ├── jwt.cpp
 │   ├── header.cpp
 │   └── crypto/
+│       ├── signing.cpp
+│       ├── encryption.cpp
+│       ├── keygen.cpp
 │       ├── rsa.cpp
 │       ├── ec.cpp
 │       ├── eddsa.cpp
 │       ├── hmac.cpp
+│       ├── hmac_util.hpp        # internal shared HMAC helper
 │       ├── aes_kw.cpp
 │       ├── aes_gcm_kw.cpp
 │       ├── aes_cbc_hmac.cpp
 │       ├── aes_gcm.cpp
 │       ├── ecdh.cpp
-│       ├── pbes2.cpp
-│       └── openssl_util.cpp
+│       └── pbes2.cpp
 │   └── optional/
 │       └── jwks_fetcher.cpp
 ├── tests/
@@ -81,6 +88,14 @@ jose-pp/
 │   ├── test_jwt.cpp
 │   ├── test_algorithms.cpp
 │   └── vectors/               # RFC test vectors as JSON
+├── fuzz/
+│   ├── CMakeLists.txt
+│   ├── fuzz_jwk.cpp
+│   ├── fuzz_jws.cpp
+│   ├── fuzz_jwe.cpp
+│   ├── fuzz_jwt.cpp
+│   ├── fuzz_base64url.cpp
+│   └── corpus/
 ├── benchmarks/
 │   └── bench_main.cpp
 └── tools/
@@ -99,17 +114,17 @@ jose-pp/
 | RS256/384/512 | `EVP_PKEY_sign` (PKCS1-v1.5) |
 | PS256/384/512 | `EVP_PKEY_sign` (PSS) |
 | ES256/384/512 | `EVP_DigestSign` (ECDSA) |
-| EdDSA | `EVP_DigestSign` (Ed25519) |
+| EdDSA | `EVP_DigestSign` (Ed25519, Ed448) |
 
 ### JWE Key Management (17 algorithms)
 
 | Algorithm | OpenSSL Primitive |
 |-----------|-------------------|
-| RSA1_5 | `EVP_PKEY_encrypt` (PKCS1) |
+| RSA1_5 | `EVP_PKEY_encrypt` (PKCS1) — **legacy, gated** (see §Legacy Algorithms) |
 | RSA-OAEP / RSA-OAEP-256 | `EVP_PKEY_encrypt` (OAEP) |
 | A128KW / A192KW / A256KW | `EVP_CIPHER` (AES wrap) |
 | dir | Direct key use |
-| ECDH-ES / ECDH-ES+A*KW | `EVP_PKEY_derive` + Concat KDF |
+| ECDH-ES / ECDH-ES+A*KW | `EVP_PKEY_derive` + Concat KDF (P-256/384/521, X25519, X448) |
 | A128GCMKW / A192GCMKW / A256GCMKW | `EVP_CIPHER` (AES-GCM) |
 | PBES2-HS*+A*KW | `PKCS5_PBKDF2_HMAC` + AES wrap |
 
@@ -124,9 +139,9 @@ jose-pp/
 
 ## Core Design Decisions
 
-### 1. Error Handling: `std::expected<T, jose::error>`
+### 1. Error Handling: `jose::expected<T>` (`std::expected`-compatible)
 
-No exceptions. Every fallible operation returns `std::expected`. This is both safer for crypto code (no exception-safety bugs around key material) and more performant.
+No exceptions. Every fallible operation returns `jose::expected<T>` — an alias for `std::expected<T, jose::error>` when built as C++23, or the vendored single-header [expected-lite](https://github.com/martinmoene/expected-lite) polyfill on C++20 (`std::expected` itself is C++23-only). The selection is pinned at CMake configure time (`JOSE_USE_STD_EXPECTED`) and exported to consumers. This is both safer for crypto code (no exception-safety bugs around key material) and more performant.
 
 ```cpp
 namespace jose {
@@ -360,10 +375,11 @@ The crypto layer and core utilities. Everything else builds on this.
 3. `secure_vector` and OpenSSL RAII wrappers
 4. `error` types with `std::expected`
 5. Algorithm enums and string conversion registry
-6. All signing primitives: HMAC, RSA (PKCS1 + PSS), ECDSA, EdDSA
+6. All signing primitives: HMAC, RSA (PKCS1 + PSS), ECDSA, EdDSA (Ed25519 + Ed448)
 7. All content encryption: AES-CBC-HMAC, AES-GCM
-8. All key management: RSA-OAEP, AES-KW, AES-GCM-KW, ECDH-ES (+Concat KDF), PBES2, direct
-9. Tests against RFC test vectors for every algorithm
+8. All key management: RSA-OAEP, AES-KW, AES-GCM-KW, ECDH-ES (+Concat KDF, X25519, X448), PBES2, direct
+9. RSA1_5 behind `jose::legacy::enable_rsa1_5()` opt-in gate (see §Legacy Algorithms)
+10. Tests against RFC test vectors for every algorithm
 
 **Risk:** ECDH-ES Concat KDF is not directly exposed by OpenSSL — we'll need a manual implementation using `EVP_PKEY_derive` for the shared secret and then a custom Concat KDF (it's just SHA-256 based, straightforward).
 
@@ -373,15 +389,16 @@ Wire the crypto primitives into the JOSE object model.
 
 **Deliverables:**
 1. `jwk` — parse/serialize all key types (RSA, EC, OKP, oct), X.509 chain, thumbprint
-2. `jwk_set` — parse/serialize, kid lookup
-3. JOSE header parsing with `crit` validation
-4. `jws` — sign, verify, compact/JSON/detached serialization, multi-signature
-5. `jwe` — encrypt, decrypt, compact/JSON serialization, multi-recipient, DEFLATE compression
-6. Unencoded payload option (RFC 7797, `b64` header)
-7. Opaque signer/verifier/decrypter interfaces — both sync and async variants
-8. `task<T>` coroutine return type (header-only, zero-dependency)
-9. Async-aware JWS/JWE overloads that accept `async_opaque_signer` / `async_opaque_key_decrypter`
-10. Interop tests: produce tokens with go-jose, consume in jose-pp and vice versa
+2. `jwk` key validation on import (see §Key Validation)
+3. `jwk_set` — parse/serialize, kid lookup
+4. JOSE header parsing with `crit` extension allowlist (see §Critical Header Extensions)
+5. `jws` — sign, verify; compact, flattened JSON, and general JSON serializations; detached payload; multi-signature
+6. `jwe` — encrypt, decrypt; compact, flattened JSON, and general JSON serializations; multi-recipient; DEFLATE compression
+7. Unencoded payload option (RFC 7797, `b64` header)
+8. Opaque signer/verifier/decrypter interfaces — both sync and async variants
+9. `task<T>` coroutine return type (header-only, zero-dependency)
+10. Async-aware JWS/JWE overloads that accept `async_opaque_signer` / `async_opaque_key_decrypter`
+11. Interop tests: generate test vectors with go-jose (Go toolchain in CI), consume in jose2cpp and vice versa; vectors checked into `tests/vectors/`
 
 ### Phase 3: JWT + Polish (Weeks 7-8)
 
@@ -396,8 +413,9 @@ High-level JWT API and production readiness.
 6. Signed-then-encrypted JWT (`cty: "JWT"` handling)
 7. Optional async JWKS URL fetcher with pluggable HTTP backend, caching, TTL refresh
 8. CLI tool (`jose-cli`) — sign, verify, encrypt, decrypt, generate-key
-9. API documentation (Doxygen)
-10. Benchmarks vs. go-jose (sign/verify throughput, parse latency)
+9. Fuzz targets (libFuzzer): `jwk::from_json`, `jws::parse`, `jwe::parse`, `jwt::parse_signed` (see §Fuzz Testing)
+10. API documentation (Doxygen)
+11. Benchmarks vs. go-jose (sign/verify throughput, parse latency)
 
 ---
 
@@ -408,7 +426,7 @@ High-level JWT API and production readiness.
 3. **Avoid redundant allocations** — pre-size buffers based on algorithm output sizes
 4. **`std::expected` over exceptions** — no exception overhead on error paths
 5. **Header-only option** — consider offering a header-only mode for the non-crypto parts (serialization, claims)
-6. **Thread safety** — all operations are stateless; keys are immutable after construction
+6. **Thread safety** — all operations are stateless; keys are immutable after construction. `jwks_fetcher` uses `atomic<shared_ptr<jwk_set>>` swap for lock-free concurrent reads during key rotation
 
 ---
 
@@ -416,7 +434,7 @@ High-level JWT API and production readiness.
 
 ```cmake
 cmake_minimum_required(VERSION 3.20)
-project(jose-pp VERSION 0.1.0 LANGUAGES CXX)
+project(jose2cpp VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -435,6 +453,7 @@ add_library(jose
     src/crypto/rsa.cpp
     src/crypto/ec.cpp
     src/crypto/eddsa.cpp
+    src/crypto/x25519_x448.cpp
     src/crypto/hmac.cpp
     src/crypto/aes_kw.cpp
     src/crypto/aes_gcm_kw.cpp
@@ -452,9 +471,96 @@ target_include_directories(jose PUBLIC include)
 
 ## Resolved Design Decisions
 
-1. **Ed448 / X25519 / X448** — Yes, add X25519 for ECDH-ES at minimum. Competitive advantage over go-jose. OpenSSL 3.x has native support.
+1. **Ed448 / X25519 / X448** — Full support. Ed25519 + Ed448 for EdDSA signing, X25519 + X448 for ECDH-ES key agreement. Competitive advantage over go-jose. OpenSSL 3.x has native support. Scoped into Phase 1 (crypto primitives) and Phase 2 (JWK OKP key type with crv=X25519/X448/Ed448).
 2. **JWKS fetching** — Yes, as an optional async component with pluggable HTTP backend. Not in core, no HTTP dependency in the main library.
 3. **Namespace** — `jose::` (clean, matches the standard).
 4. **Minimum OpenSSL version** — 3.0+ only. 1.1.1 is EOL.
 5. **CMake install/pkg-config** — Yes, ship as a proper CMake package with `find_package(jose)` from day one.
 6. **Async/coroutine support** — Targeted: core crypto stays synchronous, async applied only to opaque signer/decrypter interfaces (for KMS/HSM) and the optional JWKS fetcher. Custom `task<T>` type, no external coroutine library dependency.
+
+---
+
+## Legacy Algorithms
+
+`RSA1_5` (RSAES-PKCS1-v1_5 key encryption) is vulnerable to Bleichenbacher-style padding oracle attacks. It is implemented for backward compatibility with existing token ecosystems but **disabled by default**.
+
+To use RSA1_5, callers must explicitly opt in:
+
+```cpp
+// Opt-in at the point of use — no global state
+auto opts = jose::legacy_options{ .allow_rsa1_5 = true };
+auto result = jwe::decrypt(token, key, opts);
+```
+
+The encrypt path also requires the flag — the library will not produce RSA1_5-encrypted tokens without explicit acknowledgment. This mirrors the pattern used by go-jose's `decrypter.Options`.
+
+---
+
+## Critical Header Extensions (`crit`)
+
+RFC 7515 §4.1.11: if a JWS/JWE header contains `"crit": ["x-custom-nonce"]`, the recipient must understand every listed extension or reject the token.
+
+**Design: allowlist at parse time** (matching go-jose's approach).
+
+Parse functions accept an optional set of known extension names. If `crit` lists anything not in that set, parsing fails with `errc::unrecognized_critical_extension`.
+
+```cpp
+// Parser knows about "x-audit-id" but nothing else
+auto known = std::set<std::string>{"x-audit-id"};
+auto result = jws::parse(token, {signing_algorithm::RS256}, known);
+
+// If token has crit: ["x-audit-id"] → OK, caller reads the value from headers
+// If token has crit: ["x-audit-id", "x-unknown"] → errc::unrecognized_critical_extension
+```
+
+The library handles all standard registered headers internally. The allowlist is only for application-defined extensions. Default (empty set) means any `crit` extension causes rejection — safe by default.
+
+---
+
+## Key Validation
+
+All key import paths (`jwk::from_json`, `jwk::from_pem`, `jwk::from_der`) perform validation:
+
+- **RSA**: reject keys below 2048 bits. Verify `n`, `e`, `d`, `p`, `q` consistency via `EVP_PKEY_check`.
+- **EC**: validate that the public point lies on the declared curve (P-256, P-384, P-521). Reject points at infinity. Uses `EC_KEY_check_key` / `EVP_PKEY_public_check`.
+- **OKP** (Ed25519, Ed448, X25519, X448): validate key length matches curve requirements.
+- **oct**: reject keys shorter than the minimum required by their declared algorithm (e.g., HS256 requires ≥32 bytes).
+
+Invalid keys fail at import with `errc::invalid_key` and a descriptive message. There is no way to construct a `jwk` holding invalid key material — validation is mandatory, not opt-in.
+
+---
+
+## Secure Memory (`mlock` Behavior)
+
+`secure_allocator` calls `mlock` on a best-effort basis. The per-process locked memory limit (typically 64KB on Linux, `ulimit -l`) means `mlock` will fail silently when many keys are active. Behavior:
+
+- If `mlock` succeeds, the allocation is pinned (not swapped to disk).
+- If `mlock` fails (`ENOMEM`), the allocation proceeds normally — key material is still zeroed on deallocation via `OPENSSL_cleanse`, but may be paged to swap.
+- No error is raised on `mlock` failure. Applications with strict requirements should raise `ulimit -l` or use `mlockall` at process startup.
+
+---
+
+## Fuzz Testing
+
+Fuzz targets using libFuzzer, integrated into the CMake build via `-DJOSE_FUZZ=ON`:
+
+**Targets:**
+- `fuzz_jwk_from_json` — arbitrary JSON → `jwk::from_json`
+- `fuzz_jws_parse` — arbitrary bytes → `jws::parse` (with all algorithms allowed)
+- `fuzz_jwe_parse` — arbitrary bytes → `jwe::parse`
+- `fuzz_jwt_parse` — arbitrary bytes → `jwt::parse_signed`
+- `fuzz_base64url` — round-trip: decode arbitrary bytes, encode result, verify match
+
+**Structure:**
+```
+fuzz/
+├── CMakeLists.txt
+├── fuzz_jwk.cpp
+├── fuzz_jws.cpp
+├── fuzz_jwe.cpp
+├── fuzz_jwt.cpp
+├── fuzz_base64url.cpp
+└── corpus/              # seed inputs from RFC test vectors
+```
+
+Fuzz targets must never crash, throw, or leak on any input. `std::expected` error returns are the expected failure mode. Any abort, ASAN violation, or undefined behavior is a bug.

@@ -1,0 +1,83 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "vcpkg",
+      "displayName": "vcpkg (cross-platform, pinned deps)",
+      "description": "Uses the vcpkg.json manifest. Requires VCPKG_ROOT to be set. Works identically on macOS and Ubuntu.",
+      "inherits": "base",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+    },
+    {
+      "name": "system",
+      "displayName": "System deps (Homebrew / apt)",
+      "description": "Uses dependencies from Homebrew or apt already installed on the machine.",
+      "inherits": "base"
+    },
+    {
+      "name": "system-macos",
+      "displayName": "System deps on macOS (Homebrew)",
+      "description": "Like 'system', but points CMake at Homebrew's keg-only openssl@3.",
+      "inherits": "system",
+      "cacheVariables": {
+        "OPENSSL_ROOT_DIR": "/opt/homebrew/opt/openssl@3"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "vcpkg",
+      "configurePreset": "vcpkg"
+    },
+    {
+      "name": "system",
+      "configurePreset": "system"
+    },
+    {
+      "name": "system-macos",
+      "configurePreset": "system-macos"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "vcpkg",
+      "configurePreset": "vcpkg",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "system",
+      "configurePreset": "system",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "system-macos",
+      "configurePreset": "system-macos",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
