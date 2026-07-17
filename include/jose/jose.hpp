@@ -11,6 +11,7 @@
 #include "jose/base64url.hpp"
 #include "jose/error.hpp"
 #include "jose/secure_bytes.hpp"
+#include "jose/version.hpp"
 
 #include "jose/crypto/encryption.hpp"
 #include "jose/crypto/keygen.hpp"

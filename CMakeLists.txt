@@ -43,6 +43,14 @@ endif()
 find_package(OpenSSL 3.0 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
+# Version header: project(VERSION) above is the single source of truth.
+# (Keep vcpkg.json's "version" field in sync when tagging a release.)
+configure_file(
+    include/jose/version.hpp.in
+    ${CMAKE_CURRENT_BINARY_DIR}/include/jose/version.hpp
+    @ONLY
+)
+
 add_library(jose
     src/base64url.cpp
     src/algorithm.cpp
@@ -64,6 +72,7 @@ add_library(jose
 target_include_directories(jose
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
@@ -101,7 +110,12 @@ install(TARGETS jose EXPORT joseTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
-install(DIRECTORY include/jose DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY include/jose DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    PATTERN "*.in" EXCLUDE
+)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/include/jose/version.hpp
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/jose
+)
 install(EXPORT joseTargets
     FILE joseTargets.cmake
     NAMESPACE jose::
@@ -117,7 +131,9 @@ configure_package_config_file(
 )
 write_basic_package_version_file(
     ${CMAKE_CURRENT_BINARY_DIR}/joseConfigVersion.cmake
-    COMPATIBILITY SameMajorVersion
+    # Pre-1.0, minor bumps are breaking (SemVer), so 0.x and 0.y must not
+    # satisfy each other. Switch to SameMajorVersion at 1.0.
+    COMPATIBILITY SameMinorVersion
 )
 install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/joseConfig.cmake
