@@ -1,0 +1,17 @@
+{
+  "name": "jose2cpp",
+  "version": "0.1.0",
+  "description": "Modern C++20 JOSE (JSON Object Signing and Encryption) library",
+  "homepage": "https://github.com/kcarpenter/jose2cpp",
+  "dependencies": [
+    {
+      "name": "openssl",
+      "version>=": "3.0.0"
+    },
+    "nlohmann-json",
+    {
+      "name": "catch2",
+      "version>=": "3.0.0"
+    }
+  ]
+}

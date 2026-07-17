@@ -1,0 +1,106 @@
+cmake_minimum_required(VERSION 3.20)
+project(jose2cpp VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(JOSE_BUILD_TESTS "Build tests" ON)
+option(JOSE_BUILD_BENCH "Build benchmarks" OFF)
+option(JOSE_BUILD_CLI "Build CLI tool" OFF)
+option(JOSE_FUZZ "Build fuzz targets (requires libFuzzer)" OFF)
+set(JOSE_USE_STD_EXPECTED AUTO CACHE STRING
+    "Use std::expected (requires C++23): AUTO, ON, or OFF (OFF = vendored expected-lite on C++20)")
+set_property(CACHE JOSE_USE_STD_EXPECTED PROPERTY STRINGS AUTO ON OFF)
+
+# jose::expected is std::expected under C++23, expected-lite under C++20.
+# Resolve the choice once at configure time and export it as a PUBLIC
+# compile definition so library and consumers always agree on the type.
+if(JOSE_USE_STD_EXPECTED STREQUAL "AUTO")
+    include(CheckCXXSourceCompiles)
+    set(_saved_std "${CMAKE_CXX_STANDARD}")
+    set(CMAKE_CXX_STANDARD 23)
+    check_cxx_source_compiles("
+        #include <expected>
+        int main() { std::expected<int, int> e{1}; return *e - 1; }
+    " JOSE_HAS_STD_EXPECTED)
+    set(CMAKE_CXX_STANDARD "${_saved_std}")
+    set(_jose_use_std_expected "${JOSE_HAS_STD_EXPECTED}")
+elseif(JOSE_USE_STD_EXPECTED)
+    set(_jose_use_std_expected ON)
+else()
+    set(_jose_use_std_expected OFF)
+endif()
+
+if(_jose_use_std_expected)
+    set(CMAKE_CXX_STANDARD 23)
+    message(STATUS "jose::expected: std::expected (C++23)")
+else()
+    set(CMAKE_CXX_STANDARD 20)
+    message(STATUS "jose::expected: vendored expected-lite (C++20)")
+endif()
+
+find_package(OpenSSL 3.0 REQUIRED)
+find_package(nlohmann_json REQUIRED)
+
+add_library(jose
+    src/base64url.cpp
+    src/algorithm.cpp
+    src/error.cpp
+    src/crypto/openssl_util.cpp
+    src/crypto/hmac.cpp
+    src/crypto/rsa.cpp
+    src/crypto/ec.cpp
+    src/crypto/eddsa.cpp
+    src/crypto/x25519_x448.cpp
+    src/crypto/aes_kw.cpp
+    src/crypto/aes_gcm_kw.cpp
+    src/crypto/aes_cbc_hmac.cpp
+    src/crypto/aes_gcm.cpp
+    src/crypto/ecdh.cpp
+    src/crypto/pbes2.cpp
+)
+
+target_include_directories(jose
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(jose
+    PUBLIC
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        nlohmann_json::nlohmann_json
+)
+
+if(_jose_use_std_expected)
+    target_compile_features(jose PUBLIC cxx_std_23)
+    target_compile_definitions(jose PUBLIC nsel_CONFIG_SELECT_EXPECTED=nsel_EXPECTED_STD)
+else()
+    target_compile_features(jose PUBLIC cxx_std_20)
+    target_compile_definitions(jose PUBLIC nsel_CONFIG_SELECT_EXPECTED=nsel_EXPECTED_NONSTD)
+endif()
+
+if(JOSE_BUILD_TESTS)
+    enable_testing()
+    find_package(Catch2 3 REQUIRED)
+    add_subdirectory(tests)
+endif()
+
+if(JOSE_FUZZ)
+    add_subdirectory(fuzz)
+endif()
+
+# Install
+include(GNUInstallDirs)
+install(TARGETS jose EXPORT joseTargets
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+install(DIRECTORY include/jose DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(EXPORT joseTargets
+    FILE joseConfig.cmake
+    NAMESPACE jose::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/jose
+)
