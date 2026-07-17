@@ -1,10 +1,11 @@
 #include "jose/crypto/aes_cbc_hmac.hpp"
 
-#include <openssl/evp.h>
+#include "hmac_util.hpp"
+
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
 
 #include <array>
-#include <cstring>
 
 namespace jose {
 
@@ -44,35 +45,13 @@ auto compute_tag(const cbc_params& p, std::span<const uint8_t> mac_key,
         al >>= 8;
     }
 
-    auto mac = make_evp_mac(EVP_MAC_fetch(nullptr, "HMAC", nullptr));
-    if (!mac) return make_openssl_error("EVP_MAC_fetch HMAC");
-
-    auto ctx = make_evp_mac_ctx(EVP_MAC_CTX_new(mac.get()));
-    if (!ctx) return make_openssl_error("EVP_MAC_CTX_new");
-
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_utf8_string(
-            "digest", const_cast<char*>(p.hmac_digest), 0),
-        OSSL_PARAM_construct_end()};
-
-    if (EVP_MAC_init(ctx.get(), mac_key.data(), mac_key.size(), params) != 1)
-        return make_openssl_error("EVP_MAC_init");
-
     // HMAC input per RFC 7518 §5.2.2.1: A || IV || E || AL
-    if (EVP_MAC_update(ctx.get(), aad.data(), aad.size()) != 1 ||
-        EVP_MAC_update(ctx.get(), iv.data(), iv.size()) != 1 ||
-        EVP_MAC_update(ctx.get(), ciphertext.data(), ciphertext.size()) != 1 ||
-        EVP_MAC_update(ctx.get(), al_bytes.data(), al_bytes.size()) != 1)
-        return make_openssl_error("EVP_MAC_update");
-
-    secure_bytes full_mac(EVP_MAX_MD_SIZE);
-    size_t mac_len = 0;
-    if (EVP_MAC_final(ctx.get(), full_mac.data(), &mac_len,
-                      full_mac.size()) != 1)
-        return make_openssl_error("EVP_MAC_final");
+    auto full_mac = detail::hmac_digest(p.hmac_digest, mac_key,
+                                        {aad, iv, ciphertext, al_bytes});
+    if (!full_mac) return full_mac;
 
     // Truncate to tag length (first half of HMAC output)
-    full_mac.resize(p.tag_len);
+    full_mac->resize(p.tag_len);
     return full_mac;
 }
 
@@ -82,7 +61,7 @@ auto aes_cbc_hmac_encrypt(content_encryption enc, std::span<const uint8_t> cek,
                           std::span<const uint8_t> iv,
                           std::span<const uint8_t> plaintext,
                           std::span<const uint8_t> aad)
-    -> expected<std::pair<secure_bytes, secure_bytes>> {
+    -> expected<encryption_result> {
     auto params = get_params(enc);
     if (!params) return jose::unexpected(params.error());
 
@@ -106,7 +85,8 @@ auto aes_cbc_hmac_encrypt(content_encryption enc, std::span<const uint8_t> cek,
     secure_bytes ciphertext(plaintext.size() + EVP_MAX_BLOCK_LENGTH);
     int out_len = 0;
 
-    if (EVP_EncryptUpdate(ctx.get(), ciphertext.data(), &out_len,
+    if (!plaintext.empty() &&
+        EVP_EncryptUpdate(ctx.get(), ciphertext.data(), &out_len,
                           plaintext.data(),
                           static_cast<int>(plaintext.size())) != 1)
         return make_openssl_error("EVP_EncryptUpdate");
@@ -122,7 +102,7 @@ auto aes_cbc_hmac_encrypt(content_encryption enc, std::span<const uint8_t> cek,
     auto tag = compute_tag(*params, mac_key, aad, iv, ciphertext);
     if (!tag) return jose::unexpected(tag.error());
 
-    return std::pair{std::move(ciphertext), std::move(*tag)};
+    return encryption_result{std::move(ciphertext), std::move(*tag)};
 }
 
 auto aes_cbc_hmac_decrypt(content_encryption enc, std::span<const uint8_t> cek,
@@ -163,7 +143,8 @@ auto aes_cbc_hmac_decrypt(content_encryption enc, std::span<const uint8_t> cek,
     secure_bytes plaintext(ciphertext.size() + EVP_MAX_BLOCK_LENGTH);
     int out_len = 0;
 
-    if (EVP_DecryptUpdate(ctx.get(), plaintext.data(), &out_len,
+    if (!ciphertext.empty() &&
+        EVP_DecryptUpdate(ctx.get(), plaintext.data(), &out_len,
                           ciphertext.data(),
                           static_cast<int>(ciphertext.size())) != 1)
         return make_openssl_error("EVP_DecryptUpdate");

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "jose/error.hpp"
-#include "jose/crypto/openssl_util.hpp"
+#include "jose/secure_bytes.hpp"
 
 #include <cstdint>
 #include <span>

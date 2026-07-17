@@ -46,17 +46,17 @@ find_package(nlohmann_json REQUIRED)
 add_library(jose
     src/base64url.cpp
     src/algorithm.cpp
-    src/error.cpp
-    src/crypto/openssl_util.cpp
     src/crypto/hmac.cpp
     src/crypto/rsa.cpp
     src/crypto/ec.cpp
     src/crypto/eddsa.cpp
-    src/crypto/x25519_x448.cpp
+    src/crypto/signing.cpp
+    src/crypto/keygen.cpp
     src/crypto/aes_kw.cpp
     src/crypto/aes_gcm_kw.cpp
     src/crypto/aes_cbc_hmac.cpp
     src/crypto/aes_gcm.cpp
+    src/crypto/encryption.cpp
     src/crypto/ecdh.cpp
     src/crypto/pbes2.cpp
 )
@@ -67,9 +67,10 @@ target_include_directories(jose
         $<INSTALL_INTERFACE:include>
 )
 
+# Only libcrypto is used (no TLS); nlohmann_json is used by the upcoming
+# JWK/JWS/JWE layers.
 target_link_libraries(jose
     PUBLIC
-        OpenSSL::SSL
         OpenSSL::Crypto
         nlohmann_json::nlohmann_json
 )
@@ -94,13 +95,32 @@ endif()
 
 # Install
 include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
 install(TARGETS jose EXPORT joseTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 install(DIRECTORY include/jose DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(EXPORT joseTargets
-    FILE joseConfig.cmake
+    FILE joseTargets.cmake
     NAMESPACE jose::
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/jose
+)
+
+# Config file pulls in OpenSSL/nlohmann_json via find_dependency so that
+# find_package(jose) works on a clean machine.
+configure_package_config_file(
+    cmake/joseConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/joseConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/jose
+)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/joseConfigVersion.cmake
+    COMPATIBILITY SameMajorVersion
+)
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/joseConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/joseConfigVersion.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/jose
 )

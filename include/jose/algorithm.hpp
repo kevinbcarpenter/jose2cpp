@@ -2,8 +2,7 @@
 
 #include "jose/error.hpp"
 
-#include <optional>
-#include <string>
+#include <cstddef>
 #include <string_view>
 
 namespace jose {

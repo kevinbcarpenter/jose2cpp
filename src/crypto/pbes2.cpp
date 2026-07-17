@@ -1,12 +1,31 @@
 #include "jose/crypto/pbes2.hpp"
+
 #include "jose/crypto/aes_kw.hpp"
+#include "jose/crypto/keygen.hpp"
 
 #include <openssl/evp.h>
-#include <openssl/rand.h>
+
+#include <string>
 
 namespace jose {
 
 namespace {
+
+// RFC 7518 §4.8.1.2 recommends at least 1000 iterations. The upper bound
+// guards against DoS via attacker-controlled p2c on the decrypt path
+// (matches go-jose v4).
+constexpr int k_min_p2c = 1000;
+constexpr int k_max_p2c = 1000000;
+
+auto check_p2c(int p2c) -> expected<void> {
+    if (p2c < k_min_p2c || p2c > k_max_p2c)
+        return make_error(errc::invalid_key,
+                          "PBES2 iteration count must be between " +
+                              std::to_string(k_min_p2c) + " and " +
+                              std::to_string(k_max_p2c) + " (got " +
+                              std::to_string(p2c) + ")");
+    return {};
+}
 
 struct pbes2_params {
     const EVP_MD* md;
@@ -69,12 +88,14 @@ auto pbes2_key_wrap(key_algorithm alg, std::string_view password,
     auto params = get_pbes2_params(alg);
     if (!params) return jose::unexpected(params.error());
 
-    // Generate random p2s (16 bytes)
-    secure_bytes p2s(16);
-    if (RAND_bytes(p2s.data(), static_cast<int>(p2s.size())) != 1)
-        return make_openssl_error("RAND_bytes");
+    auto p2c_ok = check_p2c(iteration_count);
+    if (!p2c_ok) return jose::unexpected(p2c_ok.error());
 
-    auto derived = derive_key(*params, password, p2s, iteration_count);
+    // Generate random p2s (16 bytes; RFC minimum is 8)
+    auto p2s = random_bytes(16);
+    if (!p2s) return jose::unexpected(p2s.error());
+
+    auto derived = derive_key(*params, password, *p2s, iteration_count);
     if (!derived) return jose::unexpected(derived.error());
 
     auto wrapped = aes_key_wrap(params->kw_alg, *derived, cek);
@@ -82,7 +103,7 @@ auto pbes2_key_wrap(key_algorithm alg, std::string_view password,
 
     return pbes2_result{
         .encrypted_key = std::move(*wrapped),
-        .p2s = std::move(p2s),
+        .p2s = std::move(*p2s),
         .p2c = iteration_count,
     };
 }
@@ -93,6 +114,13 @@ auto pbes2_key_unwrap(key_algorithm alg, std::string_view password,
                       int p2c) -> expected<secure_bytes> {
     auto params = get_pbes2_params(alg);
     if (!params) return jose::unexpected(params.error());
+
+    auto p2c_ok = check_p2c(p2c);
+    if (!p2c_ok) return jose::unexpected(p2c_ok.error());
+
+    if (p2s.size() < 8)
+        return make_error(errc::invalid_key,
+                          "PBES2 salt (p2s) must be at least 8 bytes");
 
     auto derived = derive_key(*params, password, p2s, p2c);
     if (!derived) return jose::unexpected(derived.error());

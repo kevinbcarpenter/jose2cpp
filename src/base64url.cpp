@@ -1,9 +1,6 @@
 #include "jose/base64url.hpp"
 
-#include <openssl/evp.h>
-
 #include <array>
-#include <algorithm>
 
 namespace jose::base64url {
 
@@ -16,9 +13,7 @@ constexpr auto make_decode_table() -> std::array<int8_t, 256> {
     std::array<int8_t, 256> table{};
     table.fill(-1);
     for (int i = 0; i < 64; ++i) {
-        auto c = static_cast<uint8_t>(
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[i]);
-        table[c] = static_cast<int8_t>(i);
+        table[static_cast<uint8_t>(k_encode_table[i])] = static_cast<int8_t>(i);
     }
     // Strict RFC 7515 §2 alphabet only: '-' and '_'. The standard base64
     // chars '+' and '/' are deliberately rejected — lenient decoding makes

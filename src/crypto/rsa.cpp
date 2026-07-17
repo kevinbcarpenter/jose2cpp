@@ -3,6 +3,8 @@
 #include <openssl/evp.h>
 #include <openssl/rsa.h>
 
+#include <string>
+
 namespace jose {
 
 namespace {
@@ -33,6 +35,16 @@ auto get_rsa_params(signing_algorithm alg) -> expected<rsa_alg_params> {
     }
 }
 
+// RFC 7518 §3.3 / §4.2: RSA keys of fewer than 2048 bits are too weak.
+auto check_key_size(EVP_PKEY* key) -> expected<void> {
+    const int bits = EVP_PKEY_get_bits(key);
+    if (bits < 2048)
+        return make_error(errc::key_size_too_small,
+                          "RSA key must be at least 2048 bits (got " +
+                              std::to_string(bits) + ")");
+    return {};
+}
+
 auto configure_pkey_ctx(EVP_PKEY_CTX* pctx, const rsa_alg_params& params)
     -> expected<void> {
     if (EVP_PKEY_CTX_set_rsa_padding(pctx, params.padding) <= 0)
@@ -53,6 +65,9 @@ auto rsa_sign(signing_algorithm alg, EVP_PKEY* key,
               std::span<const uint8_t> data) -> expected<secure_bytes> {
     auto params = get_rsa_params(alg);
     if (!params) return jose::unexpected(params.error());
+
+    auto size_ok = check_key_size(key);
+    if (!size_ok) return jose::unexpected(size_ok.error());
 
     auto ctx = make_evp_md_ctx();
     if (!ctx) return make_openssl_error("EVP_MD_CTX_new");
@@ -84,6 +99,9 @@ auto rsa_verify(signing_algorithm alg, EVP_PKEY* key,
                 std::span<const uint8_t> signature) -> expected<void> {
     auto params = get_rsa_params(alg);
     if (!params) return jose::unexpected(params.error());
+
+    auto size_ok = check_key_size(key);
+    if (!size_ok) return jose::unexpected(size_ok.error());
 
     auto ctx = make_evp_md_ctx();
     if (!ctx) return make_openssl_error("EVP_MD_CTX_new");

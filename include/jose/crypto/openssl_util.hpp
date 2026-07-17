@@ -1,52 +1,15 @@
 #pragma once
 
 #include "jose/error.hpp"
+#include "jose/secure_bytes.hpp"
 
-#include <cstdint>
 #include <memory>
-#include <span>
-#include <vector>
+#include <string>
 
 #include <openssl/evp.h>
-#include <openssl/ec.h>
 #include <openssl/err.h>
-#include <openssl/crypto.h>
-
-#if defined(__unix__) || defined(__APPLE__)
-#include <sys/mman.h>
-#endif
 
 namespace jose {
-
-// --- Secure allocator ---
-
-template <typename T>
-struct secure_allocator {
-    using value_type = T;
-
-    secure_allocator() noexcept = default;
-
-    template <typename U>
-    constexpr secure_allocator(const secure_allocator<U>&) noexcept {}
-
-    [[nodiscard]] auto allocate(std::size_t n) -> T* {
-        return std::allocator<T>{}.allocate(n);
-    }
-
-    void deallocate(T* p, std::size_t n) noexcept {
-        OPENSSL_cleanse(p, n * sizeof(T));
-        std::allocator<T>{}.deallocate(p, n);
-    }
-
-    template <typename U>
-    auto operator==(const secure_allocator<U>&) const noexcept -> bool { return true; }
-};
-
-using secure_bytes = std::vector<uint8_t, secure_allocator<uint8_t>>;
-
-inline auto to_span(const secure_bytes& v) -> std::span<const uint8_t> {
-    return {v.data(), v.size()};
-}
 
 // --- OpenSSL RAII wrappers ---
 
@@ -93,20 +56,6 @@ inline auto openssl_error_string() -> std::string {
 
 inline auto make_openssl_error(const std::string& context) -> unexpected {
     return make_error(errc::openssl_error, context + ": " + openssl_error_string());
-}
-
-// --- Secure mlock helper (best-effort) ---
-
-inline void secure_mlock(void* ptr, std::size_t len) {
-#if defined(__unix__) || defined(__APPLE__)
-    ::mlock(ptr, len); // ignore failure — best-effort
-#endif
-}
-
-inline void secure_munlock(void* ptr, std::size_t len) {
-#if defined(__unix__) || defined(__APPLE__)
-    ::munlock(ptr, len);
-#endif
 }
 
 } // namespace jose

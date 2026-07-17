@@ -4,6 +4,46 @@ C++ variation of the Go Jose library.
 
 A modern C++20 JOSE (JSON Object Signing and Encryption) library.
 
+## Quick start
+
+Include the umbrella header and use the unified entry points — `sign`/`verify`
+for all 13 JWS algorithms and `encrypt`/`decrypt` for all 6 JWE content
+encryption algorithms. Every fallible call returns `jose::expected<T>`
+(no exceptions); key material lives in `jose::secure_bytes`, which zeroes
+memory on free.
+
+```cpp
+#include <jose/jose.hpp>
+
+// --- Signing (dispatches on the algorithm: HMAC, RSA, ECDSA, EdDSA) ---
+auto key = jose::generate_ec_key(jose::ec_curve::P256).value();
+auto payload = std::span<const uint8_t>{...};
+
+auto sig = jose::sign(jose::signing_algorithm::ES256, key.get(), payload);
+if (!sig) { /* sig.error().code, sig.error().message */ }
+
+auto ok = jose::verify(jose::signing_algorithm::ES256, key.get(), payload, *sig);
+
+// HMAC uses a symmetric key (a byte span) instead of an EVP_PKEY:
+auto oct = jose::random_bytes(32).value();
+auto mac = jose::sign(jose::signing_algorithm::HS256, oct, payload);
+
+// --- Authenticated encryption (AES-CBC-HMAC or AES-GCM) ---
+auto enc = jose::content_encryption::A256GCM;
+auto cek = jose::generate_cek(enc).value();
+auto iv  = jose::generate_iv(enc).value();
+
+auto sealed = jose::encrypt(enc, cek, iv, plaintext, aad);
+auto opened = jose::decrypt(enc, cek, iv, sealed->ciphertext, aad, sealed->tag);
+```
+
+Key generation covers all JOSE key types: `generate_rsa_key(bits)` (≥ 2048
+enforced), `generate_ec_key(P256|P384|P521)`, `generate_okp_key(Ed25519|Ed448|X25519|X448)`,
+and `random_bytes(n)` for oct keys.
+
+Lower-level primitives (AES key wrap, ECDH-ES + Concat KDF, PBES2,
+base64url) are available from the individual `jose/crypto/*.hpp` headers.
+
 ## Building
 
 jose2cpp needs a C++20 compiler, CMake ≥ 3.21, and three dependencies:

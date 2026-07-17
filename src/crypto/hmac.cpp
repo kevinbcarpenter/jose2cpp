@@ -1,8 +1,10 @@
 #include "jose/crypto/hmac.hpp"
 
-#include <openssl/core_names.h>
+#include "hmac_util.hpp"
+
 #include <openssl/crypto.h>
-#include <openssl/evp.h>
+
+#include <string>
 
 namespace jose {
 
@@ -36,34 +38,7 @@ auto hmac_sign(signing_algorithm alg, std::span<const uint8_t> key,
                           "HMAC key must be at least " +
                               std::to_string(params->min_key_bytes) + " bytes");
 
-    auto mac = make_evp_mac(EVP_MAC_fetch(nullptr, "HMAC", nullptr));
-    if (!mac) return make_openssl_error("EVP_MAC_fetch");
-
-    auto ctx = make_evp_mac_ctx(EVP_MAC_CTX_new(mac.get()));
-    if (!ctx) return make_openssl_error("EVP_MAC_CTX_new");
-
-    OSSL_PARAM ossl_params[] = {
-        OSSL_PARAM_construct_utf8_string(
-            OSSL_MAC_PARAM_DIGEST,
-            const_cast<char*>(params->digest), 0),
-        OSSL_PARAM_construct_end()};
-
-    if (EVP_MAC_init(ctx.get(), key.data(), key.size(), ossl_params) != 1)
-        return make_openssl_error("EVP_MAC_init");
-
-    if (EVP_MAC_update(ctx.get(), data.data(), data.size()) != 1)
-        return make_openssl_error("EVP_MAC_update");
-
-    size_t out_len = EVP_MAC_CTX_get_mac_size(ctx.get());
-    if (out_len == 0)
-        return make_error(errc::openssl_error, "EVP_MAC_CTX_get_mac_size returned 0");
-
-    secure_bytes result(out_len);
-    if (EVP_MAC_final(ctx.get(), result.data(), &out_len, result.size()) != 1)
-        return make_openssl_error("EVP_MAC_final");
-
-    result.resize(out_len);
-    return result;
+    return detail::hmac_digest(params->digest, key, {data});
 }
 
 auto hmac_verify(signing_algorithm alg, std::span<const uint8_t> key,

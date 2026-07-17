@@ -1,20 +1,12 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include "jose/algorithm.hpp"
-#include "jose/crypto/hmac.hpp"
-#include "jose/crypto/rsa.hpp"
-#include "jose/crypto/ec.hpp"
-#include "jose/crypto/eddsa.hpp"
-#include "jose/crypto/openssl_util.hpp"
+#include "jose/jose.hpp"
 
 #include <openssl/evp.h>
-#include <openssl/param_build.h>
-#include <openssl/rand.h>
 #include <openssl/rsa.h>
 
-#include <array>
 #include <cstdint>
-#include <span>
+#include <string_view>
 #include <vector>
 
 using namespace jose;
@@ -25,39 +17,12 @@ auto make_data(std::string_view s) -> std::vector<uint8_t> {
     return {s.begin(), s.end()};
 }
 
-auto generate_random_key(size_t len) -> std::vector<uint8_t> {
-    std::vector<uint8_t> key(len);
-    RAND_bytes(key.data(), static_cast<int>(len));
-    return key;
-}
-
-auto generate_rsa_key(int bits = 2048) -> evp_pkey_ptr {
+// Deliberately bypasses jose::generate_rsa_key to make a weak key for
+// negative tests.
+auto generate_small_rsa_key(int bits) -> evp_pkey_ptr {
     auto ctx = make_evp_pkey_ctx(EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr));
     EVP_PKEY_keygen_init(ctx.get());
     EVP_PKEY_CTX_set_rsa_keygen_bits(ctx.get(), bits);
-    EVP_PKEY* raw = nullptr;
-    EVP_PKEY_keygen(ctx.get(), &raw);
-    return make_evp_pkey_ptr(raw);
-}
-
-auto generate_ec_key(const char* group_name) -> evp_pkey_ptr {
-    auto ctx = make_evp_pkey_ctx(
-        EVP_PKEY_CTX_new_from_name(nullptr, "EC", nullptr));
-    EVP_PKEY_keygen_init(ctx.get());
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_utf8_string("group",
-            const_cast<char*>(group_name), 0),
-        OSSL_PARAM_construct_end()
-    };
-    EVP_PKEY_CTX_set_params(ctx.get(), params);
-    EVP_PKEY* raw = nullptr;
-    EVP_PKEY_keygen(ctx.get(), &raw);
-    return make_evp_pkey_ptr(raw);
-}
-
-auto generate_ed_key(int nid) -> evp_pkey_ptr {
-    auto ctx = make_evp_pkey_ctx(EVP_PKEY_CTX_new_id(nid, nullptr));
-    EVP_PKEY_keygen_init(ctx.get());
     EVP_PKEY* raw = nullptr;
     EVP_PKEY_keygen(ctx.get(), &raw);
     return make_evp_pkey_ptr(raw);
@@ -73,53 +38,51 @@ TEST_CASE("HMAC sign and verify", "[signing][hmac]") {
     auto data = make_data("test payload for HMAC signing");
 
     SECTION("HS256 round-trip") {
-        auto key = generate_random_key(32);
+        auto key = random_bytes(32).value();
         auto sig = hmac_sign(signing_algorithm::HS256, key, data);
         REQUIRE(sig.has_value());
-        auto ok = hmac_verify(signing_algorithm::HS256, key, data, to_span(*sig));
+        auto ok = hmac_verify(signing_algorithm::HS256, key, data, *sig);
         REQUIRE(ok.has_value());
     }
 
     SECTION("HS384 round-trip") {
-        auto key = generate_random_key(48);
+        auto key = random_bytes(48).value();
         auto sig = hmac_sign(signing_algorithm::HS384, key, data);
         REQUIRE(sig.has_value());
-        auto ok = hmac_verify(signing_algorithm::HS384, key, data, to_span(*sig));
+        auto ok = hmac_verify(signing_algorithm::HS384, key, data, *sig);
         REQUIRE(ok.has_value());
     }
 
     SECTION("HS512 round-trip") {
-        auto key = generate_random_key(64);
+        auto key = random_bytes(64).value();
         auto sig = hmac_sign(signing_algorithm::HS512, key, data);
         REQUIRE(sig.has_value());
-        auto ok = hmac_verify(signing_algorithm::HS512, key, data, to_span(*sig));
+        auto ok = hmac_verify(signing_algorithm::HS512, key, data, *sig);
         REQUIRE(ok.has_value());
     }
 
     SECTION("verify with wrong data fails") {
-        auto key = generate_random_key(32);
+        auto key = random_bytes(32).value();
         auto sig = hmac_sign(signing_algorithm::HS256, key, data);
         REQUIRE(sig.has_value());
 
         auto bad_data = make_data("tampered payload");
-        auto result = hmac_verify(signing_algorithm::HS256, key, bad_data,
-                                  to_span(*sig));
+        auto result = hmac_verify(signing_algorithm::HS256, key, bad_data, *sig);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("verify with wrong key fails") {
-        auto key = generate_random_key(32);
+        auto key = random_bytes(32).value();
         auto sig = hmac_sign(signing_algorithm::HS256, key, data);
         REQUIRE(sig.has_value());
 
-        auto wrong_key = generate_random_key(32);
-        auto result = hmac_verify(signing_algorithm::HS256, wrong_key, data,
-                                  to_span(*sig));
+        auto wrong_key = random_bytes(32).value();
+        auto result = hmac_verify(signing_algorithm::HS256, wrong_key, data, *sig);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("key too short returns errc::key_too_short") {
-        auto short_key = generate_random_key(16); // HS256 needs 32
+        auto short_key = random_bytes(16).value(); // HS256 needs 32
         auto result = hmac_sign(signing_algorithm::HS256, short_key, data);
         REQUIRE_FALSE(result.has_value());
         REQUIRE(result.error().code == errc::key_too_short);
@@ -132,14 +95,13 @@ TEST_CASE("HMAC sign and verify", "[signing][hmac]") {
 
 TEST_CASE("RSA sign and verify", "[signing][rsa]") {
     auto data = make_data("test payload for RSA signing");
-    auto key = generate_rsa_key(2048);
+    auto key = generate_rsa_key(2048).value();
     REQUIRE(key != nullptr);
 
     SECTION("RS256 round-trip") {
         auto sig = rsa_sign(signing_algorithm::RS256, key.get(), data);
         REQUIRE(sig.has_value());
-        auto ok = rsa_verify(signing_algorithm::RS256, key.get(), data,
-                             to_span(*sig));
+        auto ok = rsa_verify(signing_algorithm::RS256, key.get(), data, *sig);
         REQUIRE(ok.has_value());
     }
 
@@ -148,8 +110,7 @@ TEST_CASE("RSA sign and verify", "[signing][rsa]") {
         REQUIRE(sig.has_value());
 
         auto bad_data = make_data("tampered payload");
-        auto result = rsa_verify(signing_algorithm::RS256, key.get(), bad_data,
-                                 to_span(*sig));
+        auto result = rsa_verify(signing_algorithm::RS256, key.get(), bad_data, *sig);
         REQUIRE_FALSE(result.has_value());
     }
 
@@ -157,17 +118,16 @@ TEST_CASE("RSA sign and verify", "[signing][rsa]") {
         auto sig = rsa_sign(signing_algorithm::RS256, key.get(), data);
         REQUIRE(sig.has_value());
 
-        auto wrong_key = generate_rsa_key(2048);
+        auto wrong_key = generate_rsa_key(2048).value();
         auto result = rsa_verify(signing_algorithm::RS256, wrong_key.get(),
-                                 data, to_span(*sig));
+                                 data, *sig);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("PS256 round-trip") {
         auto sig = rsa_sign(signing_algorithm::PS256, key.get(), data);
         REQUIRE(sig.has_value());
-        auto ok = rsa_verify(signing_algorithm::PS256, key.get(), data,
-                             to_span(*sig));
+        auto ok = rsa_verify(signing_algorithm::PS256, key.get(), data, *sig);
         REQUIRE(ok.has_value());
     }
 
@@ -176,9 +136,26 @@ TEST_CASE("RSA sign and verify", "[signing][rsa]") {
         REQUIRE(sig.has_value());
 
         auto bad_data = make_data("tampered payload");
-        auto result = rsa_verify(signing_algorithm::PS256, key.get(), bad_data,
-                                 to_span(*sig));
+        auto result = rsa_verify(signing_algorithm::PS256, key.get(), bad_data, *sig);
         REQUIRE_FALSE(result.has_value());
+    }
+}
+
+TEST_CASE("RSA minimum key size is enforced", "[signing][rsa]") {
+    auto data = make_data("payload");
+
+    SECTION("generate_rsa_key rejects < 2048 bits") {
+        auto key = generate_rsa_key(1024);
+        REQUIRE_FALSE(key.has_value());
+        REQUIRE(key.error().code == errc::key_size_too_small);
+    }
+
+    SECTION("rsa_sign rejects a 1024-bit key") {
+        auto weak = generate_small_rsa_key(1024);
+        REQUIRE(weak != nullptr);
+        auto sig = rsa_sign(signing_algorithm::RS256, weak.get(), data);
+        REQUIRE_FALSE(sig.has_value());
+        REQUIRE(sig.error().code == errc::key_size_too_small);
     }
 }
 
@@ -190,55 +167,50 @@ TEST_CASE("ECDSA sign and verify", "[signing][ec]") {
     auto data = make_data("test payload for ECDSA signing");
 
     SECTION("ES256 round-trip and fixed-size signature") {
-        auto key = generate_ec_key("P-256");
-        REQUIRE(key != nullptr);
-
+        auto key = generate_ec_key(ec_curve::P256).value();
         auto sig = ec_sign(signing_algorithm::ES256, key.get(), data);
         REQUIRE(sig.has_value());
         REQUIRE(sig->size() == 64);
 
-        auto ok = ec_verify(signing_algorithm::ES256, key.get(), data,
-                            to_span(*sig));
+        auto ok = ec_verify(signing_algorithm::ES256, key.get(), data, *sig);
         REQUIRE(ok.has_value());
     }
 
     SECTION("ES384 round-trip and fixed-size signature") {
-        auto key = generate_ec_key("P-384");
-        REQUIRE(key != nullptr);
-
+        auto key = generate_ec_key(ec_curve::P384).value();
         auto sig = ec_sign(signing_algorithm::ES384, key.get(), data);
         REQUIRE(sig.has_value());
         REQUIRE(sig->size() == 96);
 
-        auto ok = ec_verify(signing_algorithm::ES384, key.get(), data,
-                            to_span(*sig));
+        auto ok = ec_verify(signing_algorithm::ES384, key.get(), data, *sig);
         REQUIRE(ok.has_value());
     }
 
     SECTION("ES512 round-trip and fixed-size signature") {
-        auto key = generate_ec_key("P-521");
-        REQUIRE(key != nullptr);
-
+        auto key = generate_ec_key(ec_curve::P521).value();
         auto sig = ec_sign(signing_algorithm::ES512, key.get(), data);
         REQUIRE(sig.has_value());
         REQUIRE(sig->size() == 132);
 
-        auto ok = ec_verify(signing_algorithm::ES512, key.get(), data,
-                            to_span(*sig));
+        auto ok = ec_verify(signing_algorithm::ES512, key.get(), data, *sig);
         REQUIRE(ok.has_value());
     }
 
     SECTION("ES256 verify with wrong data fails") {
-        auto key = generate_ec_key("P-256");
-        REQUIRE(key != nullptr);
-
+        auto key = generate_ec_key(ec_curve::P256).value();
         auto sig = ec_sign(signing_algorithm::ES256, key.get(), data);
         REQUIRE(sig.has_value());
 
         auto bad_data = make_data("tampered payload");
-        auto result = ec_verify(signing_algorithm::ES256, key.get(), bad_data,
-                                to_span(*sig));
+        auto result = ec_verify(signing_algorithm::ES256, key.get(), bad_data, *sig);
         REQUIRE_FALSE(result.has_value());
+    }
+
+    SECTION("curve/algorithm mismatch is rejected") {
+        auto p384_key = generate_ec_key(ec_curve::P384).value();
+        auto sig = ec_sign(signing_algorithm::ES256, p384_key.get(), data);
+        REQUIRE_FALSE(sig.has_value());
+        REQUIRE(sig.error().code == errc::algorithm_mismatch);
     }
 }
 
@@ -250,48 +222,90 @@ TEST_CASE("EdDSA sign and verify", "[signing][eddsa]") {
     auto data = make_data("test payload for EdDSA signing");
 
     SECTION("Ed25519 round-trip") {
-        auto key = generate_ed_key(EVP_PKEY_ED25519);
-        REQUIRE(key != nullptr);
-
+        auto key = generate_okp_key(okp_curve::Ed25519).value();
         auto sig = eddsa_sign(key.get(), data);
         REQUIRE(sig.has_value());
 
-        auto ok = eddsa_verify(key.get(), data, to_span(*sig));
+        auto ok = eddsa_verify(key.get(), data, *sig);
         REQUIRE(ok.has_value());
     }
 
     SECTION("Ed448 round-trip") {
-        auto key = generate_ed_key(EVP_PKEY_ED448);
-        REQUIRE(key != nullptr);
-
+        auto key = generate_okp_key(okp_curve::Ed448).value();
         auto sig = eddsa_sign(key.get(), data);
         REQUIRE(sig.has_value());
 
-        auto ok = eddsa_verify(key.get(), data, to_span(*sig));
+        auto ok = eddsa_verify(key.get(), data, *sig);
         REQUIRE(ok.has_value());
     }
 
     SECTION("Ed25519 verify with wrong data fails") {
-        auto key = generate_ed_key(EVP_PKEY_ED25519);
-        REQUIRE(key != nullptr);
-
+        auto key = generate_okp_key(okp_curve::Ed25519).value();
         auto sig = eddsa_sign(key.get(), data);
         REQUIRE(sig.has_value());
 
         auto bad_data = make_data("tampered payload");
-        auto result = eddsa_verify(key.get(), bad_data, to_span(*sig));
+        auto result = eddsa_verify(key.get(), bad_data, *sig);
         REQUIRE_FALSE(result.has_value());
     }
 
     SECTION("Ed448 verify with wrong data fails") {
-        auto key = generate_ed_key(EVP_PKEY_ED448);
-        REQUIRE(key != nullptr);
-
+        auto key = generate_okp_key(okp_curve::Ed448).value();
         auto sig = eddsa_sign(key.get(), data);
         REQUIRE(sig.has_value());
 
         auto bad_data = make_data("tampered payload");
-        auto result = eddsa_verify(key.get(), bad_data, to_span(*sig));
+        auto result = eddsa_verify(key.get(), bad_data, *sig);
         REQUIRE_FALSE(result.has_value());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unified sign/verify
+// ---------------------------------------------------------------------------
+
+TEST_CASE("unified sign/verify dispatches by algorithm", "[signing][unified]") {
+    auto data = make_data("unified API payload");
+
+    SECTION("HS256 with oct key") {
+        auto key = random_bytes(32).value();
+        auto sig = sign(signing_algorithm::HS256, key, data);
+        REQUIRE(sig.has_value());
+        REQUIRE(verify(signing_algorithm::HS256, key, data, *sig).has_value());
+    }
+
+    SECTION("RS256 with RSA key") {
+        auto key = generate_rsa_key().value();
+        auto sig = sign(signing_algorithm::RS256, key.get(), data);
+        REQUIRE(sig.has_value());
+        REQUIRE(verify(signing_algorithm::RS256, key.get(), data, *sig).has_value());
+    }
+
+    SECTION("ES256 with EC key") {
+        auto key = generate_ec_key(ec_curve::P256).value();
+        auto sig = sign(signing_algorithm::ES256, key.get(), data);
+        REQUIRE(sig.has_value());
+        REQUIRE(verify(signing_algorithm::ES256, key.get(), data, *sig).has_value());
+    }
+
+    SECTION("EdDSA with Ed25519 key") {
+        auto key = generate_okp_key(okp_curve::Ed25519).value();
+        auto sig = sign(signing_algorithm::EdDSA, key.get(), data);
+        REQUIRE(sig.has_value());
+        REQUIRE(verify(signing_algorithm::EdDSA, key.get(), data, *sig).has_value());
+    }
+
+    SECTION("asymmetric algorithm with oct key is rejected") {
+        auto key = random_bytes(32).value();
+        auto sig = sign(signing_algorithm::RS256, to_span(key), data);
+        REQUIRE_FALSE(sig.has_value());
+        REQUIRE(sig.error().code == errc::algorithm_mismatch);
+    }
+
+    SECTION("HMAC algorithm with asymmetric key is rejected") {
+        auto key = generate_rsa_key().value();
+        auto sig = sign(signing_algorithm::HS256, key.get(), data);
+        REQUIRE_FALSE(sig.has_value());
+        REQUIRE(sig.error().code == errc::algorithm_mismatch);
     }
 }

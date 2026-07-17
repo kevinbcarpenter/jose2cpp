@@ -30,6 +30,7 @@ jose2cpp/
 │       ├── jose.hpp              # umbrella header
 │       ├── base64url.hpp
 │       ├── error.hpp             # error types (std::expected based)
+│       ├── secure_bytes.hpp      # zeroing allocator + secure_bytes
 │       ├── algorithm.hpp         # algorithm enum + registry
 │       ├── jwk.hpp               # JWK / JWKSet
 │       ├── jws.hpp               # JWS sign/verify/parse
@@ -38,18 +39,20 @@ jose2cpp/
 │       ├── header.hpp            # JOSE header types
 │       ├── async.hpp             # task<T>, async opaque interfaces
 │       └── crypto/
+│           ├── signing.hpp          # unified sign/verify (all JWS algs)
+│           ├── encryption.hpp       # unified encrypt/decrypt (all JWE enc algs)
+│           ├── keygen.hpp           # RSA/EC/OKP key generation, random_bytes
 │           ├── rsa.hpp
 │           ├── ec.hpp
 │           ├── eddsa.hpp            # Ed25519 + Ed448
-│           ├── x25519_x448.hpp      # X25519/X448 for ECDH-ES
 │           ├── hmac.hpp
 │           ├── aes_kw.hpp
 │           ├── aes_gcm_kw.hpp
 │           ├── aes_cbc_hmac.hpp
 │           ├── aes_gcm.hpp
-│           ├── ecdh.hpp
+│           ├── ecdh.hpp             # incl. X25519/X448 key agreement
 │           ├── pbes2.hpp
-│           └── openssl_util.hpp  # RAII wrappers, secure_vector
+│           └── openssl_util.hpp  # RAII wrappers, error helpers
 │       └── optional/
 │           └── jwks_fetcher.hpp  # async JWKS URL fetcher (opt-in)
 ├── src/
@@ -61,18 +64,20 @@ jose2cpp/
 │   ├── jwt.cpp
 │   ├── header.cpp
 │   └── crypto/
+│       ├── signing.cpp
+│       ├── encryption.cpp
+│       ├── keygen.cpp
 │       ├── rsa.cpp
 │       ├── ec.cpp
 │       ├── eddsa.cpp
-│       ├── x25519_x448.cpp
 │       ├── hmac.cpp
+│       ├── hmac_util.hpp        # internal shared HMAC helper
 │       ├── aes_kw.cpp
 │       ├── aes_gcm_kw.cpp
 │       ├── aes_cbc_hmac.cpp
 │       ├── aes_gcm.cpp
 │       ├── ecdh.cpp
-│       ├── pbes2.cpp
-│       └── openssl_util.cpp
+│       └── pbes2.cpp
 │   └── optional/
 │       └── jwks_fetcher.cpp
 ├── tests/
