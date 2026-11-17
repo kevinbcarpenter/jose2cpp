@@ -43,7 +43,7 @@ auto check_curve(EVP_PKEY* key, const ec_alg_params& p) -> expected<void> {
     size_t name_len = 0;
     if (!EVP_PKEY_get_utf8_string_param(key, OSSL_PKEY_PARAM_GROUP_NAME,
                                         name, sizeof(name), &name_len))
-        return make_error(errc::invalid_key, "key is not an EC key");
+        return make_crypto_failure(errc::invalid_key, "key is not an EC key");
 
     auto group = std::string_view(name, name_len);
     if (group != p.group_name && group != p.jose_name)
@@ -166,7 +166,7 @@ auto ec_verify(signing_algorithm alg, EVP_PKEY* key,
         return make_openssl_error("EVP_DigestVerifyUpdate");
 
     if (EVP_DigestVerifyFinal(ctx.get(), der_sig->data(), der_sig->size()) != 1)
-        return make_error(errc::invalid_signature, "ECDSA signature verification failed");
+        return make_crypto_failure(errc::invalid_signature, "ECDSA signature verification failed");
 
     return {};
 }

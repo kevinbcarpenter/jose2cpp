@@ -46,16 +46,36 @@ inline auto make_evp_mac_ctx(EVP_MAC_CTX* p = nullptr) -> evp_mac_ctx_ptr {
 
 // --- OpenSSL error helpers ---
 
+// OpenSSL keeps a per-thread error queue. Whenever the library turns an
+// OpenSSL failure into a jose::error it must drain that queue: otherwise
+// the entries accumulate, and a later failure would be reported with
+// whatever stale error happened to be oldest.
+
+// Describe the most recent OpenSSL error (the one raised by the call that
+// just failed), then clear the queue.
 inline auto openssl_error_string() -> std::string {
-    unsigned long err = ERR_get_error();
-    if (err == 0) return "unknown OpenSSL error";
-    char buf[256];
-    ERR_error_string_n(err, buf, sizeof(buf));
-    return buf;
+    const unsigned long err = ERR_peek_last_error();
+    std::string out = "unknown OpenSSL error";
+    if (err != 0) {
+        char buf[256];
+        ERR_error_string_n(err, buf, sizeof(buf));
+        out = buf;
+    }
+    ERR_clear_error();
+    return out;
 }
 
+// An OpenSSL call failed for an unexpected reason: report OpenSSL's error.
 inline auto make_openssl_error(const std::string& context) -> unexpected {
     return make_error(errc::openssl_error, context + ": " + openssl_error_string());
+}
+
+// An OpenSSL call failed for an expected, input-dependent reason (bad tag,
+// bad signature, bad padding, wrong key type): report a jose error code and
+// discard OpenSSL's detail, which callers should not see or depend on.
+inline auto make_crypto_failure(errc code, std::string message) -> unexpected {
+    ERR_clear_error();
+    return make_error(code, std::move(message));
 }
 
 } // namespace jose

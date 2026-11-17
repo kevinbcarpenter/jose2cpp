@@ -4,6 +4,7 @@ add_executable(jose_tests
     test_signing.cpp
     test_encryption.cpp
     test_secure_bytes.cpp
+    test_openssl_errors.cpp
     test_vectors.cpp
     support/test_support.cpp
 )

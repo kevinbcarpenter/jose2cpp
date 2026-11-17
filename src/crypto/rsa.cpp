@@ -121,7 +121,7 @@ auto rsa_verify(signing_algorithm alg, EVP_PKEY* key,
         return make_openssl_error("EVP_DigestVerifyUpdate");
 
     if (EVP_DigestVerifyFinal(ctx.get(), signature.data(), signature.size()) != 1)
-        return make_error(errc::invalid_signature, "RSA signature verification failed");
+        return make_crypto_failure(errc::invalid_signature, "RSA signature verification failed");
 
     return {};
 }
@@ -271,16 +271,14 @@ auto rsa_decrypt_key(key_algorithm alg, EVP_PKEY* private_key,
     size_t out_len = 0;
     if (EVP_PKEY_decrypt(ctx.get(), nullptr, &out_len, encrypted_key.data(),
                          encrypted_key.size()) <= 0) {
-        ERR_clear_error();
-        return make_error(errc::decryption_failed, "RSA key decryption failed");
+        return make_crypto_failure(errc::decryption_failed, "RSA key decryption failed");
     }
 
     secure_bytes cek(out_len);
     if (EVP_PKEY_decrypt(ctx.get(), cek.data(), &out_len, encrypted_key.data(),
                          encrypted_key.size()) <= 0 ||
         out_len != cek_len) {
-        ERR_clear_error();
-        return make_error(errc::decryption_failed, "RSA key decryption failed");
+        return make_crypto_failure(errc::decryption_failed, "RSA key decryption failed");
     }
 
     cek.resize(out_len);
