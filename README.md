@@ -82,6 +82,24 @@ auto verified = parsed->verify(key.public_key().value());   // the payload, if v
 auto by_kid = parsed->verify(jwks);       // pick keys from a jwk_set by "kid"
 ```
 
+### Encryption (JWE)
+
+`jose::jwe` encrypts and decrypts with every RFC 7518 key-management
+algorithm and content encryption, in all three serializations, with multiple
+recipients and optional DEFLATE compression. Parsing takes the algorithms
+you accept; every cryptographic failure is the same `errc::decryption_failed`:
+
+```cpp
+auto key = jose::jwk::generate_ec(jose::ec_curve::P256).value();
+auto sealed = jose::jwe::encrypt(plaintext, jose::content_encryption::A256GCM,
+                                 {jose::key_algorithm::ECDH_ES_A256KW, key.public_key().value()});
+auto token = sealed->compact();
+
+auto parsed = jose::jwe::parse(*token, {jose::key_algorithm::ECDH_ES_A256KW},
+                               {jose::content_encryption::A256GCM});
+auto opened = parsed->decrypt(key);    // expected<secure_bytes>
+```
+
 ### JOSE headers
 
 `jose::header` parses and type-checks a JOSE header; `jose::join_headers`
@@ -113,16 +131,17 @@ jose::init_secure_heap(1 << 16);  // 64 KiB; returns locked / not_locked / error
 ```
 
 Every algorithm is checked against the published RFC test vectors in
-[tests/vectors](tests/vectors) (RFC 3394, 7515, 7517, 7518, 7520, 7797, 8032, 8037).
+[tests/vectors](tests/vectors) (RFC 3394, 7515, 7516, 7517, 7518, 7520, 7797, 8032, 8037).
 
 ## Building
 
-jose2cpp needs a C++20 compiler, CMake ≥ 3.21, and three dependencies:
+jose2cpp needs a C++20 compiler, CMake ≥ 3.21, and four dependencies:
 
 | Dependency     | Version   |
 | -------------- | --------- |
 | OpenSSL        | ≥ 3.0     |
 | nlohmann-json  | any recent |
+| zlib           | any (macOS SDK and most distros ship it) |
 | Catch2         | ≥ 3.0 (tests only) |
 
 There are two supported ways to get the dependencies. Use **vcpkg** for reproducible,
@@ -168,7 +187,7 @@ Apple Silicon (`/opt/homebrew`); on an Intel Mac, override with
 
 **Ubuntu 24.04:**
 ```sh
-sudo apt install nlohmann-json3-dev libssl-dev catch2 cmake ninja-build g++
+sudo apt install nlohmann-json3-dev libssl-dev zlib1g-dev catch2 cmake ninja-build g++
 cmake --preset system
 cmake --build --preset system
 ctest --preset system
@@ -177,7 +196,7 @@ ctest --preset system
 **Ubuntu 22.04:** apt ships Catch2 **v2**, but the tests require Catch2 ≥ 3. Either
 build without tests:
 ```sh
-sudo apt install nlohmann-json3-dev libssl-dev cmake ninja-build g++
+sudo apt install nlohmann-json3-dev libssl-dev zlib1g-dev cmake ninja-build g++
 cmake --preset system -DJOSE_BUILD_TESTS=OFF
 cmake --build --preset system
 ```

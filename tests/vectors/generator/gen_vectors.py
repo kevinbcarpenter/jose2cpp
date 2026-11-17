@@ -1,7 +1,7 @@
 """Generate tests/vectors/*.json from RFC text files.
 
 Usage:
-    mkdir -p /tmp/rfc && for n in 3394 7515 7517 7518 7520 7638 7797 8032 8037; do
+    mkdir -p /tmp/rfc && for n in 3394 7515 7516 7517 7518 7520 7638 7797 8032 8037; do
         curl -sSfL -o /tmp/rfc/rfc$n.txt https://www.rfc-editor.org/rfc/rfc$n.txt
     done
     python3 -I tests/vectors/generator/gen_vectors.py /tmp/rfc tests/vectors
@@ -593,6 +593,79 @@ assert jws_cases[-1]["flattened"]["payload"] == "$.02"
 assert jws_cases[-1]["compact"].count("..") == 1
 
 # --------------------------------------------------------------------------
+# Complete JWE serializations: RFC 7520 §5, RFC 7516 App. A. "keys" holds
+# one decryption key per recipient, in order (PBES2 passwords as oct keys);
+# "legacy" marks RSA1_5 recipients, which need the explicit opt-in.
+# --------------------------------------------------------------------------
+jwe_cases = []
+
+
+def jwe_case(source, plaintext, keys, legacy=False, compact=None, general=None, flattened=None):
+    c = {"source": source, "plaintext": b64u(plaintext), "keys": keys, "legacy": legacy}
+    if compact is not None:
+        c["compact"] = compact
+    if general is not None:
+        c["general"] = general
+    if flattened is not None:
+        c["flattened"] = flattened
+    jwe_cases.append(c)
+
+
+password_7520 = {"kty": "oct", "k": b64u(unescape(F[96][1][0].strip()))}
+plaintext_7520_jwks = json.dumps(json_block_wrapped("\n".join(F[95][1])), separators=(",", ":"),
+                                 ensure_ascii=False).encode()
+for sec, plain, keys, legacy, comp, gen, flat in [
+    ("5.1", plaintext_7520, [fig_json(73)], True, 81, 82, 83),
+    ("5.2", plaintext_7520, [fig_json(84)], False, 92, 93, 94),
+    ("5.3", plaintext_7520_jwks, [password_7520], False, 105, 106, 107),
+    ("5.4", plaintext_7520, [fig_json(108)], False, 117, 118, 119),
+    ("5.5", plaintext_7520, [fig_json(120)], False, 128, 129, None),
+    ("5.6", plaintext_7520, [fig_json(130)], False, 136, 137, None),
+    ("5.7", plaintext_7520, [fig_json(138)], False, 148, 149, 150),
+    ("5.8", plaintext_7520, [fig_json(151)], False, 159, 160, 161),
+    ("5.9", plaintext_7520, [fig_json(151)], False, 170, 171, 172),
+    ("5.10", plaintext_7520, [fig_json(151)], False, None, 182, 183),
+    ("5.11", plaintext_7520, [fig_json(151)], False, None, 192, 193),
+    ("5.12", plaintext_7520, [fig_json(151)], False, None, 200, 201),
+    ("5.13", plaintext_7520, [fig_json(73), fig_json(108), fig_json(138)], True, None, 221, None),
+]:
+    jwe_case(f"RFC 7520 §{sec}", plain, keys, legacy,
+             compact=fig_b64(comp) if comp else None,
+             general=fig_json(gen) if gen else None,
+             flattened=fig_json(flat) if flat else None)
+
+t7516 = "\n".join(rfcfig.clean_lines(rfc(7516)))
+
+
+def appendix(text, start, end):
+    return text[text.rindex(start):text.rindex(end)]
+
+
+def byte_array_after(text, label):
+    m = re.search(label + r"[^\[]*\[([\d,\s]+)\]", text)
+    return bytes(int(x) for x in m.group(1).replace(",", " ").split())
+
+
+jwe_keys_7516 = {}
+for sub, nxt, legacy in [("A.1", "A.2.  Example", False), ("A.2", "A.3.  Example", True),
+                         ("A.3", "A.4.  Example", False)]:
+    blk = appendix(t7516, f"{sub}.  Example JWE", nxt)
+    plain = byte_array_after(blk, r"representation\s+of\s+this\s+plaintext\s+\(using\s+JSON\s+array\s+notation\)\s+is:")
+    key = json_block_wrapped(blk[blk.index(f"{sub}.3.  Key Encryption"):])
+    jwe_keys_7516[sub] = key
+    jwe_case(f"RFC 7516 Appendix {sub}", plain, [key], legacy,
+             compact=compact_after(blk[blk.index(f"{sub}.7.  Complete Representation"):]))
+assert unb64u(jwe_cases[-1]["plaintext"]) == b"Live long and prosper."
+assert unb64u(jwe_cases[-3]["plaintext"]).startswith(b"The true sign of intelligence")
+
+a4 = appendix(t7516, "A.4.7.  Complete JWE JSON", "A.5.  Example JWE Using Flattened")
+a5 = appendix(t7516, "A.5.  Example JWE Using Flattened", "Appendix B.  Example AES_128")
+jwe_case("RFC 7516 Appendix A.4", b"Live long and prosper.", [jwe_keys_7516["A.2"], jwe_keys_7516["A.3"]],
+         True, general=json_block(a4))
+jwe_case("RFC 7516 Appendix A.5", b"Live long and prosper.", [jwe_keys_7516["A.3"]], False,
+         flattened=json_block(a5))
+
+# --------------------------------------------------------------------------
 os.makedirs(OUT_DIR, exist_ok=True)
 for name, cases in [
     ("signatures", signatures),
@@ -605,6 +678,7 @@ for name, cases in [
     ("jwk", jwk_cases),
     ("jwk_sets", jwk_sets),
     ("jws", jws_cases),
+    ("jwe", jwe_cases),
 ]:
     # Every string field except a few known non-b64 ones must decode.
     for c in cases:

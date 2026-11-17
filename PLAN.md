@@ -2,7 +2,7 @@
 
 ## Project Goal
 
-A modern C++20 library implementing the JOSE (JSON Object Signing and Encryption) standards at feature parity with go-jose v4. Dependencies: OpenSSL 3.x (crypto), nlohmann/json (serialization), Catch2 (tests).
+A modern C++20 library implementing the JOSE (JSON Object Signing and Encryption) standards at feature parity with go-jose v4. Dependencies: OpenSSL 3.x (crypto), nlohmann/json (serialization), zlib (JWE DEFLATE, private), Catch2 (tests).
 
 ## RFC Coverage
 
@@ -398,7 +398,7 @@ Wire the crypto primitives into the JOSE object model.
 3. ✅ `jwk_set` — parse/serialize, kid lookup
 4. ✅ JOSE header parsing with `crit` extension allowlist (see §Critical Header Extensions)
 5. ✅ `jws` — sign, verify; compact, flattened JSON, and general JSON serializations; detached payload; multi-signature (see §JWS)
-6. `jwe` — encrypt, decrypt; compact, flattened JSON, and general JSON serializations; multi-recipient; DEFLATE compression
+6. ✅ `jwe` — encrypt, decrypt; compact, flattened JSON, and general JSON serializations; multi-recipient; DEFLATE compression (see §JWE)
 7. ✅ Unencoded payload option (RFC 7797, `b64` header)
 8. Opaque signer/verifier/decrypter interfaces — both sync and async variants
 9. `task<T>` coroutine return type (header-only, zero-dependency)
@@ -445,6 +445,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(OpenSSL 3.0 REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(ZLIB REQUIRED)
 find_package(Catch2 3 REQUIRED)
 
 add_library(jose
@@ -548,6 +549,21 @@ Implementation (Phase 2, `jose/jws.hpp`), following go-jose v4:
 - **Signing input is built from the parts as transmitted** (protected header and payload strings), never from re-encoded values, so a parsed JWS re-serializes byte-for-byte.
 - **RFC 7797**: with `b64=false` the payload is raw in the signing input; `b64` must be protected, listed in `crit`, and identical across signatures. `compact()` refuses a payload containing `.` (use `compact_detached()`); JSON output requires the payload to be valid UTF-8.
 - **Vectors**: `tests/vectors/jws.json` holds 17 cases / 31 serializations (RFC 7515 App. A.1–A.4, A.6, A.7; RFC 7520 §4.1–4.8 incl. detached, unprotected-only and multi-signature; RFC 7797 §4.1–4.2; RFC 8037 A.4). Each is parsed, verified, tampered, and re-serialized exactly; deterministic ones are re-signed and match byte-for-byte when the header encoding coincides.
+
+---
+
+## JWE
+
+Implementation (Phase 2, `jose/jwe.hpp`), following go-jose v4:
+
+- **Parsing needs two allowlists**: key-management algorithms and content encryptions. Every recipient's `alg` and the (common) `enc` must be in them; `zip` may only be `DEF`. Headers go through `join_headers` (`zip` protected, parts disjoint, `crit` allowlist). The IV and tag lengths must match `enc` (`errc::invalid_iv` / `invalid_tag`), and `dir` / `ECDH-ES` recipients must have an empty encrypted key (RFC 7516 §5.2 step 10).
+- **Decryption** checks the key first — `jwk::check_algorithm` (for `dir`, against `enc`, since RFC 7520 labels CEKs with their `enc` value), `jwk::check_operation` (`unwrapKey`, `deriveKey` for ECDH-ES, `decrypt` for `dir`), a private key for RSA/ECDH, and an `epk` on the key's curve. Those are reported as key errors. **Every cryptographic failure** (key unwrap, ECDH, wrong CEK length, tag) is the same `errc::decryption_failed` with the same message, so failures can't be told apart; with RSA1_5 the constant-time random-CEK countermeasure makes padding failures surface as tag failures too.
+- `decrypt(jwk)` needs one recipient, `decrypt(jwk_set)` selects by `kid`, `decrypt_multi(jwk)` tries each recipient the key suits and returns its index. Plaintext is returned as `secure_bytes`.
+- **PBES2 on decrypt**: `p2c` must be in [1000, 1 000 000] and `p2s` at least 8 octets (`errc::invalid_header`), bounding attacker-chosen work.
+- **DEFLATE** (`zip:"DEF"`, raw RFC 1951 via zlib, a private dependency) is applied after decryption, so a malformed stream isn't an oracle. Output is capped at max(250 KiB, 10 × ciphertext) by default (go-jose v4's bound), configurable via `jwe_decrypt_options::max_decompressed_size`.
+- **Encryption** takes `jwe_recipient`s (alg, key, extra parameters such as `apu`/`apv`, PBES2 count) and `jwe_encrypt_options` (shared protected / unprotected headers, JSON `aad`, `compress`, `include_kid`, `legacy`). With one recipient, its parameters (`alg`, `kid`, `epk`, `iv`/`tag`, `p2s`/`p2c`) go in the protected header so the compact form works; with several they go in per-recipient headers. `dir` and `ECDH-ES` fix the CEK and are single-recipient only. Library-owned parameters (`alg enc zip epk iv tag p2s p2c`) can't be supplied by the caller.
+- **AAD is built from the transmitted strings** (protected header, `aad`), so a parsed JWE re-serializes byte-for-byte.
+- **Vectors**: `tests/vectors/jwe.json` — 18 cases / 37 serializations (RFC 7520 §5.1–5.13: RSA1_5, RSA-OAEP, PBES2, ECDH-ES(+KW), dir, AES-GCM-KW, AES-KW, compression, AAD, shared unprotected headers, multiple recipients; RFC 7516 App. A.1–A.5). Each is parsed, decrypted with every recipient's key, re-serialized exactly, and tampered. RFC 7520 §5.5/§5.6 label a JSON object without `recipients` "general"; it is parsed (correctly) as flattened.
 
 ---
 

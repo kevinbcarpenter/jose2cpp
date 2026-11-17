@@ -11,6 +11,7 @@
 #include "jose/base64url.hpp"
 #include "jose/error.hpp"
 #include "jose/header.hpp"
+#include "jose/jwe.hpp"
 #include "jose/jwk.hpp"
 #include "jose/jws.hpp"
 #include "jose/secure_bytes.hpp"
