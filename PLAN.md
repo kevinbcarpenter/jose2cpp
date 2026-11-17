@@ -217,12 +217,16 @@ public:
   static auto from_pem(std::string_view pem) -> expected<jwk, error>;
   static auto generate_rsa(int bits) -> expected<jwk, error>;
   static auto generate_ec(ec_curve curve) -> expected<jwk, error>;
+  static auto from_pkey(evp_pkey_ptr key) -> expected<jwk, error>;
+  static auto from_oct(std::span<const uint8_t> key) -> expected<jwk, error>;
   static auto generate_oct(size_t bytes) -> expected<jwk, error>;
-  static auto generate_okp() -> expected<jwk, error>; // Ed25519
+  static auto generate_okp(okp_curve crv) -> expected<jwk, error>; // Ed25519/Ed448/X25519/X448
 
-  auto to_json() const -> nlohmann::json;
+  auto to_json() const -> expected<nlohmann::json, error>;  // fails only if OpenSSL export fails
   auto public_key() const -> expected<jwk, error>;
-  auto thumbprint(hash_algorithm h = hash_algorithm::SHA256) const -> expected<std::string, error>;
+  auto thumbprint(hash_algorithm h = hash_algorithm::SHA256) const -> expected<std::vector<uint8_t>, error>;
+  auto pkey() const -> EVP_PKEY*;                   // nullptr for oct
+  auto oct() const -> std::span<const uint8_t>;     // empty for asymmetric keys
   auto is_public() const -> bool;
   auto key_type() const -> kty;
   auto key_id() const -> std::optional<std::string>;
@@ -234,7 +238,9 @@ class jwk_set {
 public:
   static auto from_json(std::string_view json) -> expected<jwk_set, error>;
   auto find(std::string_view kid) const -> std::optional<std::reference_wrapper<const jwk>>;
+  auto find_all(std::string_view kid) const -> std::vector<std::reference_wrapper<const jwk>>;
   auto keys() const -> std::span<const jwk>;
+  auto skipped() const -> std::span<const error>;  // members ignored per RFC 7517 §5
   // ...
 };
 ```
@@ -387,9 +393,9 @@ Known-answer tests: `tests/vectors/*.json` (38 cases from RFC 3394, 7515, 7517, 
 Wire the crypto primitives into the JOSE object model.
 
 **Deliverables:**
-1. `jwk` — parse/serialize all key types (RSA, EC, OKP, oct), X.509 chain, thumbprint
-2. `jwk` key validation on import (see §Key Validation)
-3. `jwk_set` — parse/serialize, kid lookup
+1. ✅ `jwk` — parse/serialize all key types (RSA, EC, OKP, oct), X.509 chain, thumbprint
+2. ✅ `jwk` key validation on import (see §Key Validation)
+3. ✅ `jwk_set` — parse/serialize, kid lookup
 4. JOSE header parsing with `crit` extension allowlist (see §Critical Header Extensions)
 5. `jws` — sign, verify; compact, flattened JSON, and general JSON serializations; detached payload; multi-signature
 6. `jwe` — encrypt, decrypt; compact, flattened JSON, and general JSON serializations; multi-recipient; DEFLATE compression
@@ -520,7 +526,7 @@ The library handles all standard registered headers internally. The allowlist is
 
 ## Key Validation
 
-All key import paths (`jwk::from_json`, `jwk::from_pem`, `jwk::from_der`) perform validation:
+All key import paths (`jwk::from_json`, `jwk::from_pem`, `jwk::from_pkey`, and the `generate_*` factories) perform validation:
 
 - **RSA**: reject keys below 2048 bits. Verify `n`, `e`, `d`, `p`, `q` consistency via `EVP_PKEY_check`.
 - **EC**: validate that the public point lies on the declared curve (P-256, P-384, P-521). Reject points at infinity. Uses `EC_KEY_check_key` / `EVP_PKEY_public_check`.
@@ -528,6 +534,16 @@ All key import paths (`jwk::from_json`, `jwk::from_pem`, `jwk::from_der`) perfor
 - **oct**: reject keys shorter than the minimum required by their declared algorithm (e.g., HS256 requires ≥32 bytes).
 
 Invalid keys fail at import with `errc::invalid_key` and a descriptive message. There is no way to construct a `jwk` holding invalid key material — validation is mandatory, not opt-in.
+
+Implementation details (Phase 2):
+
+- **RSA private keys** must include `p` and `q` (as go-jose requires); `dp`/`dq`/`qi` are computed when absent. Multi-prime keys (`oth`) are rejected as unsupported. Consistency is checked with `EVP_PKEY_check`.
+- **EC / OKP** coordinates, `d`, and `x` must be exactly the curve size (RFC 7518 §6.2, RFC 8037); OKP `x` must equal the public key derived from `d`. Curves other than P-256/384/521, Ed25519/Ed448, X25519/X448 are `errc::unsupported_algorithm`.
+- **`alg`** must suit the key when it is a registered value: e.g. `ES256` only on P-256, `RS*`/`PS*` only on RSA, `HS256` only on an oct key of ≥ 32 octets (`errc::key_too_short`), `A128KW`/`A128GCM` only on a 16-octet oct key. Unregistered values are allowed (RFC 7517 §4.4). Mismatches are `errc::algorithm_mismatch`.
+- **`use` / `key_ops`**: `key_ops` may not repeat values, and must agree with `use` when `use` is `sig` or `enc` (RFC 7517 §4.3).
+- **`x5c`**: every entry must be a DER certificate (standard base64); the leaf's public key must match the JWK's key; `x5t` / `x5t#S256`, if present, must match the leaf. Chains are *not* path-validated — that is the application's trust decision, as in go-jose.
+- **JWK Sets** follow RFC 7517 §5: members that are invalid or use an unsupported `kty`/`crv` are skipped rather than failing the whole set; their errors are available from `jwk_set::skipped()`.
+- **PEM** import accepts PKCS#8, SubjectPublicKeyInfo, PKCS#1 and SEC1 keys, and certificates (a chain becomes `x5c`, leaf first). Encrypted PEM is rejected; no passphrase prompt is ever installed.
 
 ---
 

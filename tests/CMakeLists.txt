@@ -5,6 +5,7 @@ add_executable(jose_tests
     test_encryption.cpp
     test_secure_bytes.cpp
     test_openssl_errors.cpp
+    test_jwk.cpp
     test_vectors.cpp
     support/test_support.cpp
 )

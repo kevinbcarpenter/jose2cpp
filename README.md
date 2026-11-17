@@ -41,6 +41,31 @@ Key generation covers all JOSE key types: `generate_rsa_key(bits)` (≥ 2048
 enforced), `generate_ec_key(P256|P384|P521)`, `generate_okp_key(Ed25519|Ed448|X25519|X448)`,
 and `random_bytes(n)` for oct keys.
 
+### Keys (JWK)
+
+`jose::jwk` parses, validates, and serializes JSON Web Keys (RFC 7517) of every
+type, including OKP keys (RFC 8037) and X.509 chains (`x5c`). A `jwk` can only
+hold a valid key: RSA keys under 2048 bits, EC points off their curve,
+mismatched private/public halves, and an `alg` that doesn't suit the key are
+all rejected at import.
+
+```cpp
+auto key = jose::jwk::from_json(R"({"kty":"EC","crv":"P-256","x":"...","y":"...","d":"..."})");
+if (!key) { /* key.error().code == errc::invalid_key, ... */ }
+
+auto sig = jose::sign(jose::signing_algorithm::ES256, key->pkey(), payload);
+
+auto pub = key->public_key();                 // strip private members
+auto kid = jose::base64url::encode(key->thumbprint().value());  // RFC 7638
+auto text = pub->to_json_string();            // publishable JWK
+
+auto from_pem = jose::jwk::from_pem(pem_text);  // keys or certificate chains
+auto fresh = jose::jwk::generate_ec(jose::ec_curve::P256);
+
+auto set = jose::jwk_set::from_json(jwks_json);  // {"keys":[...]}
+if (auto k = set->find("my-kid")) { /* k->get().pkey() */ }
+```
+
 Lower-level primitives are available from the individual `jose/crypto/*.hpp`
 headers: AES key wrap, AES-GCM key wrap, RSA-OAEP / RSA-OAEP-256 key
 encryption (`rsa_encrypt_key` / `rsa_decrypt_key`), ECDH-ES + Concat KDF,
