@@ -1,0 +1,11 @@
+[
+  {
+    "source": "RFC 7520 §5.7",
+    "alg": "A256GCMKW",
+    "kek": "qC57l_uxcm7Nm3K-ct4GFjx8tM1U8CZ0NLBvdQstiS8",
+    "iv": "KkYT0GX_2jHlfqN_",
+    "tag": "kfPduVQ3T3H6vnewt--ksw",
+    "encrypted_key": "lJf3HbOApxMEBkCMOoTnnABxs_CvTWUmZQ2ElLvYNok",
+    "cek": "UWxARpat23nL9ReIj4WG3D1ee9I4r-Mv5QLuFXdy_rE"
+  }
+]

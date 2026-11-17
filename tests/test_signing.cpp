@@ -139,6 +139,25 @@ TEST_CASE("RSA sign and verify", "[signing][rsa]") {
         auto result = rsa_verify(signing_algorithm::PS256, key.get(), bad_data, *sig);
         REQUIRE_FALSE(result.has_value());
     }
+
+    SECTION("every RS*/PS* algorithm round-trips and is hash-bound") {
+        for (auto alg : {signing_algorithm::RS256, signing_algorithm::RS384,
+                         signing_algorithm::RS512, signing_algorithm::PS256,
+                         signing_algorithm::PS384, signing_algorithm::PS512}) {
+            INFO(to_string(alg));
+            auto sig = rsa_sign(alg, key.get(), data);
+            REQUIRE(sig.has_value());
+            REQUIRE(sig->size() == 256);
+            REQUIRE(rsa_verify(alg, key.get(), data, *sig).has_value());
+        }
+
+        // A signature made with one hash must not verify under another.
+        auto rs256 = rsa_sign(signing_algorithm::RS256, key.get(), data).value();
+        REQUIRE_FALSE(rsa_verify(signing_algorithm::RS384, key.get(), data, rs256).has_value());
+        auto ps384 = rsa_sign(signing_algorithm::PS384, key.get(), data).value();
+        REQUIRE_FALSE(rsa_verify(signing_algorithm::PS512, key.get(), data, ps384).has_value());
+        REQUIRE_FALSE(rsa_verify(signing_algorithm::RS384, key.get(), data, ps384).has_value());
+    }
 }
 
 TEST_CASE("RSA minimum key size is enforced", "[signing][rsa]") {

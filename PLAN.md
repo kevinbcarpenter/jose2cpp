@@ -159,18 +159,15 @@ namespace jose {
 }
 ```
 
-### 2. Memory Safety: `secure_vector<uint8_t>`
+### 2. Memory Safety: `secure_bytes`
 
-Key material lives in `secure_vector` — a custom allocator that zeros memory on deallocation and optionally calls `mlock`. All crypto intermediates use this type.
+Key material lives in `secure_bytes` — a vector with a custom allocator that zeros memory on deallocation and, when the application opts in, allocates from OpenSSL's mlock'ed secure heap (see §Secure Memory). All crypto intermediates use this type.
 
 ```cpp
 template<typename T>
 struct secure_allocator {
-  void deallocate(T* p, size_t n) noexcept {
-    OPENSSL_cleanse(p, n * sizeof(T));
-    std::allocator<T>{}.deallocate(p, n);
-  }
-  // ...
+  T* allocate(size_t n);                    // secure heap if initialised, else normal heap
+  void deallocate(T* p, size_t n) noexcept; // CRYPTO_secure_clear_free: cleanse + free
 };
 using secure_bytes = std::vector<uint8_t, secure_allocator<uint8_t>>;
 ```
@@ -365,9 +362,11 @@ This avoids baking in an HTTP dependency (no curl, no Boost.Beast in core) while
 
 ## Phased Implementation
 
-### Phase 1: Foundation + JWA (Weeks 1-3)
+### Phase 1: Foundation + JWA (Weeks 1-3) — ✅ complete
 
 The crypto layer and core utilities. Everything else builds on this.
+
+Known-answer tests: `tests/vectors/*.json` (38 cases from RFC 3394, 7515, 7517, 7518, 7520, 8032, 8037), extracted from the RFC texts by `tests/vectors/generator/gen_vectors.py` and run by `tests/test_vectors.cpp`. RSA-OAEP-256 has no published vector and is covered by round-trip tests only.
 
 **Deliverables:**
 1. Build system (CMake + vcpkg manifest for OpenSSL, nlohmann/json, Catch2)
@@ -378,7 +377,7 @@ The crypto layer and core utilities. Everything else builds on this.
 6. All signing primitives: HMAC, RSA (PKCS1 + PSS), ECDSA, EdDSA (Ed25519 + Ed448)
 7. All content encryption: AES-CBC-HMAC, AES-GCM
 8. All key management: RSA-OAEP, AES-KW, AES-GCM-KW, ECDH-ES (+Concat KDF, X25519, X448), PBES2, direct
-9. RSA1_5 behind `jose::legacy::enable_rsa1_5()` opt-in gate (see §Legacy Algorithms)
+9. RSA1_5 behind the `jose::legacy_options{.allow_rsa1_5 = true}` opt-in (see §Legacy Algorithms)
 10. Tests against RFC test vectors for every algorithm
 
 **Risk:** ECDH-ES Concat KDF is not directly exposed by OpenSSL — we'll need a manual implementation using `EVP_PKEY_derive` for the shared secret and then a custom Concat KDF (it's just SHA-256 based, straightforward).
@@ -494,6 +493,8 @@ auto result = jwe::decrypt(token, key, opts);
 
 The encrypt path also requires the flag — the library will not produce RSA1_5-encrypted tokens without explicit acknowledgment. This mirrors the pattern used by go-jose's `decrypter.Options`.
 
+At the primitive level this is `jose::rsa_encrypt_key` / `jose::rsa_decrypt_key`, which take `legacy_options` and refuse RSA1_5 with `errc::legacy_algorithm_disabled` by default. Even with the opt-in, `rsa_decrypt_key` never reports an RSA1_5 padding failure: it returns a random CEK of the expected length, selected in constant time, so a tampered key fails later at the authentication tag like any other bad token (RFC 7516 §11.5 Bleichenbacher countermeasure, as in go-jose).
+
 ---
 
 ## Critical Header Extensions (`crit`)
@@ -532,11 +533,19 @@ Invalid keys fail at import with `errc::invalid_key` and a descriptive message. 
 
 ## Secure Memory (`mlock` Behavior)
 
-`secure_allocator` calls `mlock` on a best-effort basis. The per-process locked memory limit (typically 64KB on Linux, `ulimit -l`) means `mlock` will fail silently when many keys are active. Behavior:
+`secure_allocator` does not call `mlock` per allocation: page locks don't nest, so unlocking one freed vector would silently unlock any other secret sharing its page. Instead it uses OpenSSL's secure heap — a single mlock'ed, guard-paged arena (also excluded from core dumps where the OS supports it) — which the application reserves once at startup:
 
-- If `mlock` succeeds, the allocation is pinned (not swapped to disk).
-- If `mlock` fails (`ENOMEM`), the allocation proceeds normally — key material is still zeroed on deallocation via `OPENSSL_cleanse`, but may be paged to swap.
-- No error is raised on `mlock` failure. Applications with strict requirements should raise `ulimit -l` or use `mlockall` at process startup.
+```cpp
+auto status = jose::init_secure_heap(1 << 16);  // 64 KiB arena
+// status: secure_heap_status::locked, ::not_locked (mlock failed), or an error
+```
+
+Behavior:
+
+- **Opt-in.** Without `init_secure_heap`, `secure_bytes` uses the normal heap. Key material is still zeroed on free (`OPENSSL_cleanse`) but may be paged to swap.
+- **mlock failure is not fatal.** If the arena can't be locked (e.g. `ulimit -l`, typically 64 KiB on Linux), `init_secure_heap` returns `secure_heap_status::not_locked`; the arena still works, guard-paged and zeroed.
+- **Silent fallback when full.** If the arena is exhausted, allocation falls back to the normal heap (still zeroed on free) and no OpenSSL error is left on the queue. Size the arena for the number of live keys; OpenSSL's DRBG also keeps its seed state there.
+- `init_secure_heap` can only succeed once per process (it's OpenSSL global state). Applications with strict requirements should also raise `ulimit -l` or use `mlockall`.
 
 ---
 

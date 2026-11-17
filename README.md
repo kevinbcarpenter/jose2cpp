@@ -41,8 +41,22 @@ Key generation covers all JOSE key types: `generate_rsa_key(bits)` (≥ 2048
 enforced), `generate_ec_key(P256|P384|P521)`, `generate_okp_key(Ed25519|Ed448|X25519|X448)`,
 and `random_bytes(n)` for oct keys.
 
-Lower-level primitives (AES key wrap, ECDH-ES + Concat KDF, PBES2,
-base64url) are available from the individual `jose/crypto/*.hpp` headers.
+Lower-level primitives are available from the individual `jose/crypto/*.hpp`
+headers: AES key wrap, AES-GCM key wrap, RSA-OAEP / RSA-OAEP-256 key
+encryption (`rsa_encrypt_key` / `rsa_decrypt_key`), ECDH-ES + Concat KDF,
+PBES2, and base64url. The legacy `RSA1_5` algorithm is refused unless the
+caller passes `jose::legacy_options{.allow_rsa1_5 = true}`.
+
+To keep key material out of swap, reserve OpenSSL's mlock'ed secure heap once
+at startup; `secure_bytes` then allocates from it, falling back to the normal
+heap (still zeroed on free) if it fills up:
+
+```cpp
+jose::init_secure_heap(1 << 16);  // 64 KiB; returns locked / not_locked / error
+```
+
+Every algorithm is checked against the published RFC test vectors in
+[tests/vectors](tests/vectors) (RFC 3394, 7515, 7517, 7518, 7520, 8032, 8037).
 
 ## Building
 

@@ -1,0 +1,20 @@
+[
+  {
+    "source": "RFC 7520 §5.3",
+    "alg": "PBES2-HS512+A256KW",
+    "password": "ZW50cmFwX2_igJNwZXRlcl9sb25n4oCTY3JlZGl0X3R1bg",
+    "p2s": "8Q1SzinasR3xchYz6ZZcHA",
+    "p2c": 8192,
+    "encrypted_key": "d3qNhUWfqheyPp4H8sjOWsDYajoej4c5Je6rlUtFPWdgtURtmeDV1g",
+    "cek": "uwsjJXaBK407Qaf0_zpcpmr1Cs0CC50hIUEyGNEt3m0"
+  },
+  {
+    "source": "RFC 7517 Appendix C",
+    "alg": "PBES2-HS256+A128KW",
+    "password": "VGh1cyBmcm9tIG15IGxpcHMsIGJ5IHlvdXJzLCBteSBzaW4gaXMgcHVyZ2VkLg",
+    "p2s": "2WCTcJZ1Rvd_CJuJripQ1w",
+    "p2c": 4096,
+    "encrypted_key": "TrqXOwuNUfDV9VPTNbyGvEJ9JMjefAVn-TR1uIxR9p6hsRQh9Tk7BA",
+    "cek": "bxsZNEIdFE5csDjwQdBScKGDJDfK7LmsgReZwsMw_bY"
+  }
+]

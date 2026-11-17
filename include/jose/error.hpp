@@ -34,6 +34,7 @@ enum class errc {
     invalid_tag,
     invalid_iv,
     compression_error,
+    invalid_argument,
 };
 
 struct error {

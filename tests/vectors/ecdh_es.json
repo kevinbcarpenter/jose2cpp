@@ -1,0 +1,112 @@
+[
+  {
+    "source": "RFC 7520 §5.4",
+    "alg_id": "ECDH-ES+A128KW",
+    "keydatalen": 128,
+    "apu": "",
+    "apv": "",
+    "recipient": {
+      "kty": "EC",
+      "kid": "peregrin.took@tuckborough.example",
+      "use": "enc",
+      "crv": "P-384",
+      "x": "YU4rRUzdmVqmRtWOs2OpDE_T5fsNIodcG8G5FWPrTPMyxpzsSOGaQLpe2FpxBmu2",
+      "y": "A8-yxCHxkfBz3hKZfI1jUYMjUhsEveZ9THuwFjH2sCNdtksRJU7D5-SkgaFL1ETP",
+      "d": "iTx2pk7wW-GqJkHcEkFQb2EFyYcO7RugmaW3mRrQVAOUiPommT0IdnYK2xDlZh-j"
+    },
+    "ephemeral": {
+      "kty": "EC",
+      "crv": "P-384",
+      "x": "uBo4kHPw6kbjx5l0xowrd_oYzBmaz-GKFZu4xAFFkbYiWgutEK6iuEDsQ6wNdNg3",
+      "y": "sp3p5SGhZVC2faXumI-e9JU2Mo8KpoYrFDr5yPNVtW4PgEwZOyQTA-JdaY8tb7E0",
+      "d": "D5H4Y_5PSKZvhfVFbcCYJOtcGZygRgfZkpsBr59Icmmhe9sW6nkZ8WfwhinUfWJg"
+    },
+    "kw_alg": "A128KW",
+    "encrypted_key": "0DJjBXri_kBcC46IkU5_Jk9BqaQeHdv2",
+    "cek": "Nou2ueKlP70ZXDbq9UrRwg"
+  },
+  {
+    "source": "RFC 7520 §5.5",
+    "alg_id": "A128CBC-HS256",
+    "keydatalen": 256,
+    "apu": "",
+    "apv": "",
+    "recipient": {
+      "kty": "EC",
+      "kid": "meriadoc.brandybuck@buckland.example",
+      "use": "enc",
+      "crv": "P-256",
+      "x": "Ze2loSV3wrroKUN_4zhwGhCqo3Xhu1td4QjeQ5wIVR0",
+      "y": "HlLtdXARY_f55A3fnzQbPcm6hgr34Mp8p-nuzQCE0Zw",
+      "d": "r_kHyZ-a06rmxM3yESK84r1otSg-aQcVStkRhA-iCM8"
+    },
+    "ephemeral": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "mPUKT_bAWGHIhg0TpjjqVsP1rXWQu_vwVOHHtNkdYoA",
+      "y": "8BQAsImGeAS46fyWw5MhYfGTT0IjBpFw2SS34Dv4Irs",
+      "d": "AtH35vJsQ9SGjYfOsjUxYXQKrPH3FjZHmEtSKoSN8cM"
+    },
+    "derived_key": "hzHdlfQIAEehb8Hrd_mFRhKsKLEzPfshfXs9l6areCc"
+  },
+  {
+    "source": "RFC 7518 Appendix C",
+    "alg_id": "A128GCM",
+    "keydatalen": 128,
+    "apu": "QWxpY2U",
+    "apv": "Qm9i",
+    "recipient": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "weNJy2HscCSM6AEDTDg04biOvhFhyyWvOHQfeF_PxMQ",
+      "y": "e8lnCO-AlStT-NJVX-crhB7QRYhiix03illJOVAOyck",
+      "d": "VEmDZpDXXK8p8N0Cndsxs924q6nS1RXFASRl6BfUqdw"
+    },
+    "ephemeral": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "gI0GAILBdu7T53akrFmMyGcsF3n5dO7MmwNBHKW5SV0",
+      "y": "SLW_xSffzlPWrHEVI30DHM_4egVwt3NQqeUD7nMFpps",
+      "d": "0_NxaRPUMQoAJt50Gz8YiTr8gRTwyEaCumd-MToTmIo"
+    },
+    "derived_key": "VqqN6vgjbSBcIijNcacQGg"
+  },
+  {
+    "source": "RFC 8037 Appendix A.6",
+    "alg_id": "ECDH-ES+A128KW",
+    "keydatalen": 128,
+    "apu": "",
+    "apv": "",
+    "recipient": {
+      "kty": "OKP",
+      "crv": "X25519",
+      "x": "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08"
+    },
+    "ephemeral": {
+      "kty": "OKP",
+      "crv": "X25519",
+      "x": "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo",
+      "d": "dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo"
+    },
+    "z": "Sl2dW6TOLeFyjjv0gDUPJeB-IclH0Z4zdvCbPB4WF0I"
+  },
+  {
+    "source": "RFC 8037 Appendix A.7",
+    "alg_id": "ECDH-ES+A256KW",
+    "keydatalen": 256,
+    "apu": "",
+    "apv": "",
+    "recipient": {
+      "kty": "OKP",
+      "crv": "X448",
+      "x": "PreoKbDNIPW8_AtZm2_sz22kYnEHvbDU80W0MCfYuXL8PjT7QjKhPKcG3LV67D2uB73BxnvzNgk"
+    },
+    "ephemeral": {
+      "kty": "OKP",
+      "crv": "X448",
+      "x": "mwj3zDG34-Z9ItWuoSEHSic70rg94Jxj-qc9LCLF2bvINmRyQdlT1AxbEtqIEg1TF3-A5TLEH6A",
+      "d": "mo9JJdFRn1d1z0awS1gA1O6e6LrovFVl1JjCjdnJuvV0qUGXRIlzkQBjgqbxJ6sdmsLYwKWYcms"
+    },
+    "z": "B__0GBrGzJXsHBapSg900S2iMs5Ap3VSKB0oK7YMC1b9JGTDNVQ5NlIcJEAwhdWaRJpQN1FKh50"
+  }
+]
