@@ -822,6 +822,26 @@ auto jwk::check_alg(const std::string& alg) const -> expected<void> {
     return {};
 }
 
+auto jwk::check_algorithm(std::string_view alg) const -> expected<void> {
+    if (alg_ && *alg_ != alg)
+        return make_error(errc::algorithm_mismatch,
+                          "key is restricted to \"alg\":\"" + *alg_ + "\", not " + std::string(alg));
+    auto r = check_alg(std::string(alg));
+    if (!r && r.error().code == errc::algorithm_mismatch)
+        return make_error(errc::algorithm_mismatch, std::string(alg) + " cannot be used with this " +
+                                                        std::string(to_string(kty_)) + " key");
+    return r;
+}
+
+auto jwk::check_operation(std::string_view op) const -> expected<void> {
+    const bool is_sig = op == "sign" || op == "verify";
+    if (use_ && (*use_ == "sig" || *use_ == "enc") && (*use_ == "sig") != is_sig)
+        return invalid("key with \"use\":\"" + *use_ + "\" may not be used to " + std::string(op));
+    if (key_ops_ && std::find(key_ops_->begin(), key_ops_->end(), op) == key_ops_->end())
+        return invalid("key's \"key_ops\" do not include \"" + std::string(op) + "\"");
+    return {};
+}
+
 auto jwk::validate_metadata() const -> expected<void> {
     if (alg_)
         if (auto r = check_alg(*alg_); !r) return r;

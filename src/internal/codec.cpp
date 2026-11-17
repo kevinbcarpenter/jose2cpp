@@ -75,6 +75,31 @@ auto b64std_encode(std::span<const uint8_t> in) -> std::string {
     return out;
 }
 
+auto is_valid_utf8(std::string_view s) -> bool {
+    const auto* p = reinterpret_cast<const unsigned char*>(s.data());
+    const auto* end = p + s.size();
+    while (p < end) {
+        const unsigned char c = *p;
+        size_t n = 0;
+        uint32_t cp = 0;
+        if (c < 0x80) { ++p; continue; }
+        if (c >= 0xC2 && c <= 0xDF) { n = 1; cp = c & 0x1F; }
+        else if (c >= 0xE0 && c <= 0xEF) { n = 2; cp = c & 0x0F; }
+        else if (c >= 0xF0 && c <= 0xF4) { n = 3; cp = c & 0x07; }
+        else return false;
+        if (static_cast<size_t>(end - p) <= n) return false;
+        for (size_t i = 1; i <= n; ++i) {
+            if ((p[i] & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (p[i] & 0x3F);
+        }
+        if ((n == 2 && cp < 0x800) || (n == 3 && (cp < 0x10000 || cp > 0x10FFFF)) ||
+            (cp >= 0xD800 && cp <= 0xDFFF))
+            return false;
+        p += n + 1;
+    }
+    return true;
+}
+
 auto digest(const EVP_MD* md, std::span<const uint8_t> in) -> expected<std::vector<uint8_t>> {
     std::vector<uint8_t> out(EVP_MAX_MD_SIZE);
     unsigned int len = 0;

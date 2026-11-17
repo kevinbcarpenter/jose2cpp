@@ -66,6 +66,22 @@ auto set = jose::jwk_set::from_json(jwks_json);  // {"keys":[...]}
 if (auto k = set->find("my-kid")) { /* k->get().pkey() */ }
 ```
 
+### Signing (JWS)
+
+`jose::jws` signs and verifies in the compact, flattened JSON and general JSON
+serializations, with detached payloads, multiple signatures, and RFC 7797
+unencoded payloads. Parsing always takes the list of algorithms you accept:
+
+```cpp
+auto key = jose::jwk::generate_ec(jose::ec_curve::P256).value();
+auto signed_ = jose::jws::sign(payload, {jose::signing_algorithm::ES256, key});
+auto token = signed_->compact();          // or to_json_string(), compact_detached()
+
+auto parsed = jose::jws::parse(*token, {jose::signing_algorithm::ES256});
+auto verified = parsed->verify(key.public_key().value());   // the payload, if valid
+auto by_kid = parsed->verify(jwks);       // pick keys from a jwk_set by "kid"
+```
+
 ### JOSE headers
 
 `jose::header` parses and type-checks a JOSE header; `jose::join_headers`
@@ -97,7 +113,7 @@ jose::init_secure_heap(1 << 16);  // 64 KiB; returns locked / not_locked / error
 ```
 
 Every algorithm is checked against the published RFC test vectors in
-[tests/vectors](tests/vectors) (RFC 3394, 7515, 7517, 7518, 7520, 8032, 8037).
+[tests/vectors](tests/vectors) (RFC 3394, 7515, 7517, 7518, 7520, 7797, 8032, 8037).
 
 ## Building
 

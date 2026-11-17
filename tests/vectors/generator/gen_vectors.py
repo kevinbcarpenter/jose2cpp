@@ -1,7 +1,7 @@
 """Generate tests/vectors/*.json from RFC text files.
 
 Usage:
-    mkdir -p /tmp/rfc && for n in 3394 7515 7517 7518 7520 7638 8032 8037; do
+    mkdir -p /tmp/rfc && for n in 3394 7515 7517 7518 7520 7638 7797 8032 8037; do
         curl -sSfL -o /tmp/rfc/rfc$n.txt https://www.rfc-editor.org/rfc/rfc$n.txt
     done
     python3 -I tests/vectors/generator/gen_vectors.py /tmp/rfc tests/vectors
@@ -510,6 +510,89 @@ for n in (1, 2, 3, 4, 5, 6, 73, 84, 108, 120, 130, 138, 151):
                       "private": k["kty"] == "oct" or "d" in k})
 
 # --------------------------------------------------------------------------
+# Complete JWS serializations: RFC 7520 §4, RFC 7515 App. A, RFC 7797 §4,
+# RFC 8037 App. A.4. "keys" holds one verification key per signature, in
+# order; "detached" lists the serializations whose payload is detached;
+# "deterministic" means re-signing must reproduce the exact bytes.
+# --------------------------------------------------------------------------
+jws_cases = []
+
+
+def jws_case(source, payload, keys, deterministic, compact=None, general=None, flattened=None,
+             detached=()):
+    c = {"source": source, "payload": b64u(payload), "keys": keys, "deterministic": deterministic}
+    if compact is not None:
+        c["compact"] = compact
+    if general is not None:
+        c["general"] = general
+    if flattened is not None:
+        c["flattened"] = flattened
+    c["detached"] = list(detached)
+    jws_cases.append(c)
+
+
+for sec, key_figs, comp, gen, flat, det, detached in [
+    ("4.1", [4], 13, 14, 15, True, ()),
+    ("4.2", [4], 20, 21, 22, False, ()),
+    ("4.3", [2], 27, 28, 29, False, ()),
+    ("4.4", [5], 34, 35, 36, True, ()),
+    ("4.5", [5], 41, 42, 43, True, ("compact", "general", "flattened")),
+    ("4.6", [5], None, 49, 50, True, ()),
+    ("4.7", [5], None, 54, 55, True, ()),
+    ("4.8", [4, 2, 5], None, 71, None, False, ()),
+]:
+    jws_case(f"RFC 7520 §{sec}", payload_7520, [fig_json(k) for k in key_figs], det,
+             compact=fig_b64(comp) if comp else None,
+             general=fig_json(gen) if gen else None,
+             flattened=fig_json(flat) if flat else None,
+             detached=detached)
+    if "general" in detached:
+        assert "payload" not in jws_cases[-1]["general"], sec
+
+sig_by_source = {c["source"]: c for c in signatures}
+for src in ("RFC 7515 Appendix A.1", "RFC 7515 Appendix A.2", "RFC 7515 Appendix A.3",
+            "RFC 7515 Appendix A.4", "RFC 8037 Appendix A.4"):
+    c = sig_by_source[src]
+    signing_input = unb64u(c["message"]).decode("ascii")
+    jws_case(src, unb64u(signing_input.split(".")[1]), [c["key"]], c["deterministic"],
+             compact=signing_input + "." + c["signature"])
+
+t7515 = "\n".join(rfcfig.clean_lines(rfc(7515)))
+a6 = json_block(t7515[t7515.rindex("A.6.4.  Complete JWS JSON"):t7515.rindex("A.7.  Example JWS Using Flattened")])
+a7 = json_block(t7515[t7515.rindex("A.7.  Example JWS Using Flattened"):t7515.rindex("Appendix B.")])
+a6_payload = unb64u(a6["payload"])
+jws_case("RFC 7515 Appendix A.6", a6_payload,
+         [sig_by_source["RFC 7515 Appendix A.2"]["key"], sig_by_source["RFC 7515 Appendix A.3"]["key"]],
+         False, general=a6)
+jws_case("RFC 7515 Appendix A.7", a6_payload, [sig_by_source["RFC 7515 Appendix A.3"]["key"]],
+         False, flattened=a7)
+
+t7797 = "\n".join(rfcfig.clean_lines(rfc(7797)))
+ex = t7797[t7797.rindex("4.  Examples"):t7797.rindex("5.  Unencoded Payload Content")]
+hmac_7797 = json_block(ex[ex.index("Web Key [JWK]"):])
+s41 = ex[ex.rindex("4.1.  Example"):ex.rindex("4.2.  Example")]
+s42 = ex[ex.rindex("4.2.  Example"):]
+
+
+def compact_after(text):
+    m = re.search(r"\(with\s+line\s+breaks\s+for\s+display\s+purposes\s+only\)\s+is:\s*\n((?:\s+[A-Za-z0-9_.-]+\s*\n)+)", text)
+    return "".join(m.group(1).split())
+
+
+def flattened_after(text):
+    return json_block(text[re.search(r"flattened\s+JWS\s+JSON\s+Serialization", text).start():])
+
+
+payload_7797 = bytes([36, 46, 48, 50])
+assert payload_7797 == b"$.02"
+jws_case("RFC 7797 §4.1", payload_7797, [hmac_7797], True,
+         compact=compact_after(s41), flattened=flattened_after(s41))
+jws_case("RFC 7797 §4.2", payload_7797, [hmac_7797], True,
+         compact=compact_after(s42), flattened=flattened_after(s42), detached=("compact",))
+assert jws_cases[-1]["flattened"]["payload"] == "$.02"
+assert jws_cases[-1]["compact"].count("..") == 1
+
+# --------------------------------------------------------------------------
 os.makedirs(OUT_DIR, exist_ok=True)
 for name, cases in [
     ("signatures", signatures),
@@ -521,11 +604,15 @@ for name, cases in [
     ("pbes2", pbes2),
     ("jwk", jwk_cases),
     ("jwk_sets", jwk_sets),
+    ("jws", jws_cases),
 ]:
     # Every string field except a few known non-b64 ones must decode.
     for c in cases:
         for k, v in c.items():
-            if isinstance(v, str) and k not in ("source", "alg", "enc", "alg_id", "kw_alg"):
+            if k == "compact":
+                for part in v.split("."):
+                    check_b64(part)
+            elif isinstance(v, str) and k not in ("source", "alg", "enc", "alg_id", "kw_alg"):
                 check_b64(v)
     with open(os.path.join(OUT_DIR, f"{name}.json"), "w") as fh:
         json.dump(cases, fh, indent=2, ensure_ascii=False)

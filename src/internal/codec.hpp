@@ -25,6 +25,9 @@ auto parse_json_strict(std::string_view text, std::string_view what) -> expected
 auto b64std_decode(std::string_view s) -> expected<std::vector<uint8_t>>;
 auto b64std_encode(std::span<const uint8_t> in) -> std::string;
 
+// RFC 3629 UTF-8 (no overlongs, surrogates, or code points > U+10FFFF).
+auto is_valid_utf8(std::string_view s) -> bool;
+
 auto digest(const EVP_MD* md, std::span<const uint8_t> in) -> expected<std::vector<uint8_t>>;
 
 } // namespace jose::internal

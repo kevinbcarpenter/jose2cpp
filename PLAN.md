@@ -397,9 +397,9 @@ Wire the crypto primitives into the JOSE object model.
 2. ✅ `jwk` key validation on import (see §Key Validation)
 3. ✅ `jwk_set` — parse/serialize, kid lookup
 4. ✅ JOSE header parsing with `crit` extension allowlist (see §Critical Header Extensions)
-5. `jws` — sign, verify; compact, flattened JSON, and general JSON serializations; detached payload; multi-signature
+5. ✅ `jws` — sign, verify; compact, flattened JSON, and general JSON serializations; detached payload; multi-signature (see §JWS)
 6. `jwe` — encrypt, decrypt; compact, flattened JSON, and general JSON serializations; multi-recipient; DEFLATE compression
-7. Unencoded payload option (RFC 7797, `b64` header)
+7. ✅ Unencoded payload option (RFC 7797, `b64` header)
 8. Opaque signer/verifier/decrypter interfaces — both sync and async variants
 9. `task<T>` coroutine return type (header-only, zero-dependency)
 10. Async-aware JWS/JWE overloads that accept `async_opaque_signer` / `async_opaque_key_decrypter`
@@ -535,6 +535,19 @@ Implementation (Phase 2, `jose/header.hpp`):
   - JWS `b64` must be listed in `crit` (RFC 7797 §6);
   - each name in `crit` must be present **in the protected header** — stricter than RFC 7515 requires, but a critical value the attacker could change or strip isn't worth honouring;
   - each name in `crit` must be understood — by the library (`b64`, JWS only) or via the caller's `extension_set` — else `errc::unrecognized_critical_extension`.
+
+---
+
+## JWS
+
+Implementation (Phase 2, `jose/jws.hpp`), following go-jose v4:
+
+- **Parsing needs an algorithm allowlist.** `jws::parse(input, algorithms, understood)` auto-detects compact vs JSON; `parse_compact`, `parse_json` and `parse_detached` are explicit. Every signature's `alg` must be in the (non-empty) list, so a token can't choose its own algorithm; `none` and unknown values are `errc::unsupported_algorithm`. Headers go through `join_headers` (so `crit`, disjointness and `b64` rules apply), and the JSON is parsed strictly (duplicate members rejected).
+- **Verification** checks the key before using it: `jwk::check_algorithm` (type, curve, HMAC length, the key's own `alg`) and `jwk::check_operation("verify")` (`use` / `key_ops`). `verify(jwk)` needs exactly one signature, `verify(jwk_set)` selects candidates by the header `kid` (required) and tries each, `verify_multi(jwk)` returns the index of the first signature the key verifies. Keys embedded in the token (`jwk`, `x5c`, `jku`) are never used implicitly.
+- **Signing** takes `jws_signer`s (alg, private jwk or oct key, optional protected/unprotected headers) and `jws_sign_options` (`b64`, `embed_jwk`, `include_kid`, default on). The protected header is serialized with nlohmann's sorted keys and no whitespace.
+- **Signing input is built from the parts as transmitted** (protected header and payload strings), never from re-encoded values, so a parsed JWS re-serializes byte-for-byte.
+- **RFC 7797**: with `b64=false` the payload is raw in the signing input; `b64` must be protected, listed in `crit`, and identical across signatures. `compact()` refuses a payload containing `.` (use `compact_detached()`); JSON output requires the payload to be valid UTF-8.
+- **Vectors**: `tests/vectors/jws.json` holds 17 cases / 31 serializations (RFC 7515 App. A.1–A.4, A.6, A.7; RFC 7520 §4.1–4.8 incl. detached, unprotected-only and multi-signature; RFC 7797 §4.1–4.2; RFC 8037 A.4). Each is parsed, verified, tampered, and re-serialized exactly; deterministic ones are re-signed and match byte-for-byte when the header encoding coincides.
 
 ---
 

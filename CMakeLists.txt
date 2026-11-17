@@ -57,6 +57,7 @@ add_library(jose
     src/secure_bytes.cpp
     src/jwk.cpp
     src/header.cpp
+    src/jws.cpp
     src/internal/codec.cpp
     src/crypto/hmac.cpp
     src/crypto/rsa.cpp

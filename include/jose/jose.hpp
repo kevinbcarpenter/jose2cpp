@@ -12,6 +12,7 @@
 #include "jose/error.hpp"
 #include "jose/header.hpp"
 #include "jose/jwk.hpp"
+#include "jose/jws.hpp"
 #include "jose/secure_bytes.hpp"
 #include "jose/version.hpp"
 

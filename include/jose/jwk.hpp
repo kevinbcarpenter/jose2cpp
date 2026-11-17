@@ -103,6 +103,19 @@ public:
     [[nodiscard]] auto x5t() const -> const std::optional<std::vector<uint8_t>>& { return x5t_; }
     [[nodiscard]] auto x5t_s256() const -> const std::optional<std::vector<uint8_t>>& { return x5t_s256_; }
 
+    // --- Usage checks (used by JWS / JWE before every operation) ---
+
+    // Succeeds if this key can be used with the JOSE algorithm `alg`: right
+    // key type, curve and size (e.g. ES256 needs P-256, HS256 >= 32 octets),
+    // and the key's own "alg", if set, is exactly `alg`. Fails with
+    // errc::algorithm_mismatch or errc::key_too_short.
+    [[nodiscard]] auto check_algorithm(std::string_view alg) const -> expected<void>;
+
+    // Succeeds if the key's "use" / "key_ops" permit `op` (an RFC 7517
+    // §4.3 key_ops value: "sign", "verify", "encrypt", "wrapKey", ...).
+    // Absent members permit everything. Fails with errc::invalid_key.
+    [[nodiscard]] auto check_operation(std::string_view op) const -> expected<void>;
+
     // Setters validate the same rules as parsing (e.g. "alg" must be
     // compatible with the key, "use" and "key_ops" must agree).
     auto set_key_id(std::optional<std::string> kid) -> void { kid_ = std::move(kid); }
