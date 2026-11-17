@@ -3,6 +3,8 @@
 #include "jose/base64url.hpp"
 #include "jose/crypto/keygen.hpp"
 
+#include "internal/codec.hpp"
+
 #include <openssl/bn.h>
 #include <openssl/core_names.h>
 #include <openssl/decoder.h>
@@ -118,45 +120,9 @@ auto req_b64(const json& j, const std::string& name) -> expected<secure_bytes> {
     return std::move(**v);
 }
 
-// Standard (padded) base64, used by "x5c" (RFC 7517 §4.7).
-auto b64std_decode(std::string_view s) -> expected<std::vector<uint8_t>> {
-    if (s.empty() || s.size() % 4 != 0)
-        return make_error(errc::invalid_base64, "x5c entry is not valid base64");
-    size_t pad = 0;
-    for (size_t i = 0; i < s.size(); ++i) {
-        const char c = s[i];
-        const bool alnum = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                           (c >= '0' && c <= '9') || c == '+' || c == '/';
-        if (c == '=' && i >= s.size() - 2) {
-            ++pad;
-        } else if (!alnum || pad > 0) {
-            return make_error(errc::invalid_base64, "x5c entry is not valid base64");
-        }
-    }
-    std::vector<uint8_t> out(s.size() / 4 * 3);
-    const int n = EVP_DecodeBlock(out.data(), reinterpret_cast<const unsigned char*>(s.data()),
-                                  static_cast<int>(s.size()));
-    if (n < 0) return make_error(errc::invalid_base64, "x5c entry is not valid base64");
-    out.resize(static_cast<size_t>(n) - pad);
-    return out;
-}
-
-auto b64std_encode(std::span<const uint8_t> in) -> std::string {
-    std::string out(4 * ((in.size() + 2) / 3) + 1, '\0');
-    const int n = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(out.data()), in.data(),
-                                  static_cast<int>(in.size()));
-    out.resize(static_cast<size_t>(n));
-    return out;
-}
-
-auto digest(const EVP_MD* md, std::span<const uint8_t> in) -> expected<std::vector<uint8_t>> {
-    std::vector<uint8_t> out(EVP_MAX_MD_SIZE);
-    unsigned int len = 0;
-    if (EVP_Digest(in.data(), in.size(), out.data(), &len, md, nullptr) != 1)
-        return make_openssl_error("EVP_Digest");
-    out.resize(len);
-    return out;
-}
+using internal::b64std_decode;
+using internal::b64std_encode;
+using internal::digest;
 
 // ---------------------------------------------------------------------------
 // Key import from JWK members
@@ -533,9 +499,9 @@ auto jwk::generate_oct(size_t bytes) -> expected<jwk> {
 }
 
 auto jwk::from_json(std::string_view text) -> expected<jwk> {
-    auto j = json::parse(text, nullptr, /*allow_exceptions=*/false);
-    if (j.is_discarded()) return make_error(errc::serialization_error, "JWK is not valid JSON");
-    return from_json(j);
+    auto j = internal::parse_json_strict(text, "JWK");
+    if (!j) return jose::unexpected(j.error());
+    return from_json(*j);
 }
 
 auto jwk::from_json(const json& j) -> expected<jwk> {
@@ -947,9 +913,9 @@ auto jwk::set_key_ops(std::optional<std::vector<std::string>> ops) -> expected<v
 // ===========================================================================
 
 auto jwk_set::from_json(std::string_view text) -> expected<jwk_set> {
-    auto j = json::parse(text, nullptr, /*allow_exceptions=*/false);
-    if (j.is_discarded()) return make_error(errc::serialization_error, "JWK Set is not valid JSON");
-    return from_json(j);
+    auto j = internal::parse_json_strict(text, "JWK Set");
+    if (!j) return jose::unexpected(j.error());
+    return from_json(*j);
 }
 
 auto jwk_set::from_json(const json& j) -> expected<jwk_set> {

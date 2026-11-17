@@ -396,7 +396,7 @@ Wire the crypto primitives into the JOSE object model.
 1. ✅ `jwk` — parse/serialize all key types (RSA, EC, OKP, oct), X.509 chain, thumbprint
 2. ✅ `jwk` key validation on import (see §Key Validation)
 3. ✅ `jwk_set` — parse/serialize, kid lookup
-4. JOSE header parsing with `crit` extension allowlist (see §Critical Header Extensions)
+4. ✅ JOSE header parsing with `crit` extension allowlist (see §Critical Header Extensions)
 5. `jws` — sign, verify; compact, flattened JSON, and general JSON serializations; detached payload; multi-signature
 6. `jwe` — encrypt, decrypt; compact, flattened JSON, and general JSON serializations; multi-recipient; DEFLATE compression
 7. Unencoded payload option (RFC 7797, `b64` header)
@@ -521,6 +521,20 @@ auto result = jws::parse(token, {signing_algorithm::RS256}, known);
 ```
 
 The library handles all standard registered headers internally. The allowlist is only for application-defined extensions. Default (empty set) means any `crit` extension causes rejection — safe by default.
+
+Implementation (Phase 2, `jose/header.hpp`):
+
+- **`jose::header`** is one header JSON object (protected, shared unprotected, or per-signature/recipient). Built by `header::parse` / `from_json` / `from_base64url`; every registered parameter present is type-checked up front, so the typed accessors (`alg()`, `kid()`, `epk()`, `p2c()`, `crit()`, `b64()`, ...) never fail. Unregistered parameters are kept verbatim and read with `get(name)`. `set()` re-validates and leaves the header unchanged on failure.
+- **Duplicate member names are rejected** (`errc::serialization_error`) in any object, nested ones included. RFC 7515 §4 / 7516 §4 / 7517 §4 allow either rejecting or keeping the last value; rejecting removes any chance of two parsers disagreeing about which `alg` a token has. `jwk::from_json` and `jwk_set::from_json` use the same strict parser.
+- **Registered parameter checks**: strings for `alg enc zip kid typ cty jku x5u`; base64url for `apu apv iv tag p2s x5t x5t#S256` (`x5t` 20 octets, `x5t#S256` 32); `jwk`/`epk` must be valid *public* asymmetric JWKs; `x5c` must be DER certificates, with `x5t`/`x5t#S256` matching the leaf; `p2c` a positive integer (the PBES2 code enforces its own upper bound); `b64` a boolean.
+- **`crit` structure** (RFC 7515 §4.1.11): a non-empty array of unique, non-empty strings, none of which is a parameter defined by RFC 7515/7516/7518 (`is_registered_header_parameter`). `b64` is not "registered" in that sense — RFC 7797 requires it to be listed.
+- **`join_headers(ctx, protected, shared, per_recipient, understood)`** combines the parts for one signature/recipient (RFC 7515 §7.2.1, RFC 7516 §7.2.1) and enforces the cross-part rules, all `errc::invalid_header` except the last:
+  - parameter names must be disjoint across parts;
+  - `crit` must be protected; for JWS so must `b64` (RFC 7797 §3), for JWE `zip` (RFC 7516 §4.1.3);
+  - `alg` is required, and `enc` for JWE;
+  - JWS `b64` must be listed in `crit` (RFC 7797 §6);
+  - each name in `crit` must be present **in the protected header** — stricter than RFC 7515 requires, but a critical value the attacker could change or strip isn't worth honouring;
+  - each name in `crit` must be understood — by the library (`b64`, JWS only) or via the caller's `extension_set` — else `errc::unrecognized_critical_extension`.
 
 ---
 

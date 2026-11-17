@@ -30,4 +30,7 @@ auto b64_string(const nlohmann::json& value) -> std::string;
 // part when the JWK has "d". Fails the current test if import fails.
 auto key_from_jwk(const nlohmann::json& jwk) -> evp_pkey_ptr;
 
+// A one-hour self-signed certificate for `key`, as PEM.
+auto self_signed_pem(EVP_PKEY* key, const char* cn) -> std::string;
+
 } // namespace jose::test

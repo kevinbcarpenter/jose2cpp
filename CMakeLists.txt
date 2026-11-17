@@ -56,6 +56,8 @@ add_library(jose
     src/algorithm.cpp
     src/secure_bytes.cpp
     src/jwk.cpp
+    src/header.cpp
+    src/internal/codec.cpp
     src/crypto/hmac.cpp
     src/crypto/rsa.cpp
     src/crypto/ec.cpp
@@ -76,6 +78,8 @@ target_include_directories(jose
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 # Only libcrypto is used (no TLS); nlohmann_json is used by the upcoming

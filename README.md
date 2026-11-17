@@ -66,6 +66,22 @@ auto set = jose::jwk_set::from_json(jwks_json);  // {"keys":[...]}
 if (auto k = set->find("my-kid")) { /* k->get().pkey() */ }
 ```
 
+### JOSE headers
+
+`jose::header` parses and type-checks a JOSE header; `jose::join_headers`
+combines protected and unprotected parts and enforces `crit`. Critical
+extensions are rejected unless the caller lists them as understood:
+
+```cpp
+auto prot = jose::header::from_base64url(encoded_protected_header);
+auto joined = jose::join_headers(jose::header_context::jws, *prot, {}, {}, {"x-audit-id"});
+if (!joined) { /* errc::unrecognized_critical_extension, errc::invalid_header, ... */ }
+auto alg = joined->alg();                  // std::optional<std::string_view>
+auto audit = joined->get("x-audit-id");    // extension value, or nullptr
+```
+
+Header and JWK parsing reject JSON with duplicate member names.
+
 Lower-level primitives are available from the individual `jose/crypto/*.hpp`
 headers: AES key wrap, AES-GCM key wrap, RSA-OAEP / RSA-OAEP-256 key
 encryption (`rsa_encrypt_key` / `rsa_decrypt_key`), ECDH-ES + Concat KDF,
