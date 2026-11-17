@@ -400,7 +400,7 @@ Wire the crypto primitives into the JOSE object model.
 5. ✅ `jws` — sign, verify; compact, flattened JSON, and general JSON serializations; detached payload; multi-signature (see §JWS)
 6. ✅ `jwe` — encrypt, decrypt; compact, flattened JSON, and general JSON serializations; multi-recipient; DEFLATE compression (see §JWE)
 7. ✅ Unencoded payload option (RFC 7797, `b64` header)
-8. Opaque signer/verifier/decrypter interfaces — both sync and async variants
+8. ✅ Opaque signer/verifier/decrypter interfaces — sync variants (see §Opaque Keys); the async variants come with items 9–10
 9. `task<T>` coroutine return type (header-only, zero-dependency)
 10. Async-aware JWS/JWE overloads that accept `async_opaque_signer` / `async_opaque_key_decrypter`
 11. Interop tests: generate test vectors with go-jose (Go toolchain in CI), consume in jose2cpp and vice versa; vectors checked into `tests/vectors/`
@@ -566,6 +566,17 @@ Implementation (Phase 2, `jose/jwe.hpp`), following go-jose v4:
 - **Vectors**: `tests/vectors/jwe.json` — 18 cases / 37 serializations (RFC 7520 §5.1–5.13: RSA1_5, RSA-OAEP, PBES2, ECDH-ES(+KW), dir, AES-GCM-KW, AES-KW, compression, AAD, shared unprotected headers, multiple recipients; RFC 7516 App. A.1–A.5). Each is parsed, decrypted with every recipient's key, re-serialized exactly, and tampered. RFC 7520 §5.5/§5.6 label a JSON object without `recipients` "general"; it is parsed (correctly) as flattened.
 
 ---
+
+## Opaque Keys
+
+Implementation notes for Phase 2 item 8 (`include/jose/opaque.hpp`), following go-jose v4's `OpaqueSigner` / `OpaqueVerifier` / `OpaqueKeyDecrypter`:
+
+- **Three interfaces.** `opaque_signer` (`public_key()`, `algorithms()`, `sign(signing_input, alg)`), `opaque_verifier` (`algorithms()`, `verify(signing_input, signature, alg)`), `opaque_key_decrypter` (`algorithms()`, `decrypt_key(encrypted_key, alg, enc, joined_header)`). Every interface states its algorithms, and the library never passes it anything else (`errc::algorithm_mismatch`); `verify_multi` / `decrypt_multi` skip signatures and recipients it can't handle. The decrypter gets the recipient's full joined header because ECDH-ES needs `epk`/`apu`/`apv`, AES-GCM-KW `iv`/`tag`, and PBES2 `p2s`/`p2c` (go-jose passes the header too).
+- **Plugging in.** `jws_signer::key` is a `signing_key = std::variant<jwk, std::shared_ptr<opaque_signer>>`, so opaque and local signers mix in one multi-signature JWS. Verifiers and decrypters are passed by reference to `jws::verify` / `verify_multi` and `jwe::decrypt` / `decrypt_multi`. `public_key()` is called only when `include_kid` or `embed_jwk` needs it.
+- **Errors.** A new `errc::key_unavailable` reports backend failures (network, permissions, device offline) and is passed through unchanged. Any other verifier error becomes `errc::invalid_signature`; any other decrypter error, and a CEK of the wrong length, becomes the uniform `errc::decryption_failed` (go-jose maps everything to `ErrCryptoFailure`; passing outages through keeps them debuggable without opening an oracle on the token's contents). Signer errors pass through: signing input isn't attacker-controlled.
+- **Signature-size check.** An `ES*` signature from an opaque signer must be exactly R || S (64/96/132 octets); a DER signature, which most HSMs and KMSs return, is caught with a message saying so.
+- **RSA1_5** still needs `legacy_options::allow_rsa1_5`, checked before the decrypter is called. The constant-time countermeasure can't be applied inside someone else's code, so the interface documents that the decrypter must not reveal padding failures.
+- **No opaque key encrypter.** Encryption uses public keys (or a CEK/KEK the caller already holds), so there is no KMS case for it yet; go-jose's `OpaqueKeyEncrypter` can't be implemented outside its package either.
 
 ## Key Validation
 

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <optional>
 
 namespace jose {
 
@@ -86,6 +87,30 @@ auto parse_signature(const std::string* encoded_protected, const json* unprotect
 
 auto b64_of(const jws_signature& sig) -> bool { return sig.joined.b64().value_or(true); }
 
+template <typename T>
+auto contains(const std::vector<T>& v, T x) -> bool {
+    return std::find(v.begin(), v.end(), x) != v.end();
+}
+
+// Catches the usual opaque-signer mistake: a DER-encoded ECDSA signature
+// (what most HSMs and KMSs return) instead of JWS's fixed-size R || S.
+auto check_signature_size(signing_algorithm alg, std::span<const uint8_t> sig) -> expected<void> {
+    size_t want = 0;
+    switch (alg) {
+    case signing_algorithm::ES256: want = 64; break;
+    case signing_algorithm::ES384: want = 96; break;
+    case signing_algorithm::ES512: want = 132; break;
+    default:
+        if (sig.empty()) return make_error(errc::invalid_signature, "the opaque signer returned an empty signature");
+        return {};
+    }
+    if (sig.size() == want) return {};
+    return make_error(errc::invalid_signature,
+                      "the opaque signer returned a " + std::to_string(sig.size()) + "-octet " +
+                          std::string(to_string(alg)) + " signature; JWS needs " + std::to_string(want) +
+                          " (R || S, not DER)");
+}
+
 auto first_non_space(std::string_view s) -> char {
     for (char c : s)
         if (c != ' ' && c != '\t' && c != '\r' && c != '\n') return c;
@@ -120,12 +145,30 @@ auto jws::sign(std::span<const uint8_t> payload, std::span<const jws_signer> sig
 
     for (const auto& signer : signers) {
         const auto alg_name = to_string(signer.alg);
-        const jwk& key = signer.key;
+        const jwk* local = std::get_if<jwk>(&signer.key);
+        opaque_signer* opaque = local ? nullptr : std::get<std::shared_ptr<opaque_signer>>(signer.key).get();
 
-        if (key.key_type() != kty::oct && !key.is_private())
-            return make_error(errc::invalid_key, "signing requires a private key");
-        if (auto r = key.check_algorithm(alg_name); !r) return jose::unexpected(r.error());
-        if (auto r = key.check_operation("sign"); !r) return jose::unexpected(r.error());
+        // The public key, for "kid" and "jwk"; asked of an opaque signer
+        // only when needed.
+        std::optional<jwk> public_key;
+        if (local) {
+            const jwk& key = *local;
+            if (key.key_type() != kty::oct && !key.is_private())
+                return make_error(errc::invalid_key, "signing requires a private key");
+            if (auto r = key.check_algorithm(alg_name); !r) return jose::unexpected(r.error());
+            if (auto r = key.check_operation("sign"); !r) return jose::unexpected(r.error());
+        } else {
+            if (!opaque) return bad_argument("jws_signer has a null opaque signer");
+            if (!contains(opaque->algorithms(), signer.alg))
+                return make_error(errc::algorithm_mismatch,
+                                  "the opaque signer does not support " + std::string(alg_name));
+            if (options.include_kid || options.embed_jwk) {
+                auto pub = opaque->public_key();
+                if (!pub) return jose::unexpected(pub.error());
+                public_key = std::move(*pub);
+            }
+        }
+        const jwk* key_info = local ? local : public_key ? &*public_key : nullptr;
 
         header prot = signer.protected_header;
         const header& unprot = signer.unprotected_header;
@@ -135,13 +178,14 @@ auto jws::sign(std::span<const uint8_t> payload, std::span<const jws_signer> sig
                                 std::string(alg_name));
         if (auto r = prot.set("alg", alg_name); !r) return jose::unexpected(r.error());
 
-        if (options.include_kid && key.key_id() && !prot.contains("kid") && !unprot.contains("kid"))
-            if (auto r = prot.set("kid", *key.key_id()); !r) return jose::unexpected(r.error());
+        if (options.include_kid && key_info && key_info->key_id() && !prot.contains("kid") &&
+            !unprot.contains("kid"))
+            if (auto r = prot.set("kid", *key_info->key_id()); !r) return jose::unexpected(r.error());
 
         if (options.embed_jwk) {
             if (prot.contains("jwk")) return bad_argument("protected header already has \"jwk\"");
-            if (key.key_type() == kty::oct) return bad_argument("cannot embed a symmetric key");
-            auto pub = key.public_key();
+            if (key_info->key_type() == kty::oct) return bad_argument("cannot embed a symmetric key");
+            auto pub = key_info->public_key();
             if (!pub) return jose::unexpected(pub.error());
             auto pub_json = pub->to_json();
             if (!pub_json) return jose::unexpected(pub_json.error());
@@ -173,10 +217,17 @@ auto jws::sign(std::span<const uint8_t> payload, std::span<const jws_signer> sig
         };
 
         const auto input = out.signing_input(sig);
-        auto value = key.key_type() == kty::oct ? jose::sign(signer.alg, key.oct(), input)
-                                                : jose::sign(signer.alg, key.pkey(), input);
-        if (!value) return jose::unexpected(value.error());
-        sig.signature.assign(value->begin(), value->end());
+        if (local) {
+            auto value = local->key_type() == kty::oct ? jose::sign(signer.alg, local->oct(), input)
+                                                       : jose::sign(signer.alg, local->pkey(), input);
+            if (!value) return jose::unexpected(value.error());
+            sig.signature.assign(value->begin(), value->end());
+        } else {
+            auto value = opaque->sign(input, signer.alg);
+            if (!value) return jose::unexpected(value.error());
+            if (auto r = check_signature_size(signer.alg, *value); !r) return jose::unexpected(r.error());
+            sig.signature = std::move(*value);
+        }
         out.signatures_.push_back(std::move(sig));
     }
     return out;
@@ -370,6 +421,18 @@ auto jws::verify_one(const jws_signature& sig, const jwk& key) const -> expected
     return {};
 }
 
+auto jws::verify_one(const jws_signature& sig, opaque_verifier& verifier) const -> expected<void> {
+    if (!contains(verifier.algorithms(), sig.alg))
+        return make_error(errc::algorithm_mismatch,
+                          "the opaque verifier does not support " + std::string(to_string(sig.alg)));
+    auto ok = verifier.verify(signing_input(sig), sig.signature, sig.alg);
+    if (!ok) {
+        if (ok.error().code == errc::invalid_signature || ok.error().code == errc::key_unavailable) return ok;
+        return make_error(errc::invalid_signature, "JWS signature is invalid: " + ok.error().message);
+    }
+    return {};
+}
+
 auto jws::verify(const jwk& key) const -> expected<std::vector<uint8_t>> {
     if (signatures_.size() != 1)
         return bad_argument("JWS has " + std::to_string(signatures_.size()) +
@@ -408,6 +471,30 @@ auto jws::verify_multi(const jwk& key) const -> expected<verified> {
     }
     if (!attempted) return make_error(errc::algorithm_mismatch, "the key suits none of the JWS signatures");
     return make_error(errc::invalid_signature, "no JWS signature verified with the key");
+}
+
+auto jws::verify(opaque_verifier& verifier) const -> expected<std::vector<uint8_t>> {
+    if (signatures_.size() != 1)
+        return bad_argument("JWS has " + std::to_string(signatures_.size()) +
+                            " signatures; use verify_multi");
+    if (auto r = verify_one(signatures_.front(), verifier); !r) return jose::unexpected(r.error());
+    return payload_;
+}
+
+auto jws::verify_multi(opaque_verifier& verifier) const -> expected<verified> {
+    const auto algs = verifier.algorithms();
+    bool attempted = false;
+    for (size_t i = 0; i < signatures_.size(); ++i) {
+        const auto& sig = signatures_[i];
+        if (!contains(algs, sig.alg)) continue;
+        attempted = true;
+        auto r = verify_one(sig, verifier);
+        if (r) return verified{i, payload_};
+        // The backend being unreachable isn't a verdict on the signature.
+        if (r.error().code == errc::key_unavailable) return jose::unexpected(r.error());
+    }
+    if (!attempted) return make_error(errc::algorithm_mismatch, "the verifier suits none of the JWS signatures");
+    return make_error(errc::invalid_signature, "no JWS signature verified with the verifier");
 }
 
 // ===========================================================================

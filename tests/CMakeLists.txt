@@ -9,6 +9,7 @@ add_executable(jose_tests
     test_header.cpp
     test_jws.cpp
     test_jwe.cpp
+    test_opaque.cpp
     test_vectors.cpp
     support/test_support.cpp
 )

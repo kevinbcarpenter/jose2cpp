@@ -21,6 +21,7 @@
 #include "jose/error.hpp"
 #include "jose/header.hpp"
 #include "jose/jwk.hpp"
+#include "jose/opaque.hpp"
 #include "jose/secure_bytes.hpp"
 
 #include <nlohmann/json.hpp>
@@ -140,6 +141,13 @@ public:
     [[nodiscard]] auto decrypt_multi(const jwk& key, const jwe_decrypt_options& options = {}) const
         -> expected<decrypted>;
 
+    // With an opaque key decrypter (opaque.hpp). The recipient's "alg"
+    // must be one of decrypter.algorithms() (else errc::algorithm_mismatch).
+    [[nodiscard]] auto decrypt(opaque_key_decrypter& decrypter, const jwe_decrypt_options& options = {}) const
+        -> expected<secure_bytes>;
+    [[nodiscard]] auto decrypt_multi(opaque_key_decrypter& decrypter, const jwe_decrypt_options& options = {}) const
+        -> expected<decrypted>;
+
     // --- Inspection ---
 
     [[nodiscard]] auto enc() const noexcept -> content_encryption { return enc_; }
@@ -172,7 +180,10 @@ private:
     auto authenticated_data() const -> std::vector<uint8_t>;
     auto recover_cek(const jwe_recipient_info& r, const jwk& key, const jwe_decrypt_options& options) const
         -> expected<secure_bytes>;
-    auto open(const jwe_recipient_info& r, const jwk& key, const jwe_decrypt_options& options) const
+    auto recover_cek(const jwe_recipient_info& r, opaque_key_decrypter& decrypter,
+                     const jwe_decrypt_options& options) const -> expected<secure_bytes>;
+    // Decrypts the content with a recovered CEK (and decompresses it).
+    auto open(const jwe_recipient_info& r, expected<secure_bytes> cek, const jwe_decrypt_options& options) const
         -> expected<secure_bytes>;
 
     content_encryption enc_ = content_encryption::A256GCM;

@@ -100,6 +100,32 @@ auto parsed = jose::jwe::parse(*token, {jose::key_algorithm::ECDH_ES_A256KW},
 auto opened = parsed->decrypt(key);    // expected<secure_bytes>
 ```
 
+### HSMs and key services (opaque keys)
+
+When the key lives in an HSM, a PKCS#11 token or a cloud KMS, implement
+`jose::opaque_signer`, `jose::opaque_verifier` or
+`jose::opaque_key_decrypter` (`jose/opaque.hpp`) and hand it to JWS or JWE
+in place of a `jwk`:
+
+```cpp
+struct kms_signer final : jose::opaque_signer {
+    auto public_key() const -> jose::expected<jose::jwk> override;   // for "kid" / "jwk"
+    auto algorithms() const -> std::vector<jose::signing_algorithm> override;
+    auto sign(std::span<const uint8_t> signing_input, jose::signing_algorithm alg)
+        -> jose::expected<std::vector<uint8_t>> override;           // ES*: R || S, not DER
+};
+
+auto signed_ = jose::jws::sign(payload, {jose::signing_algorithm::ES256,
+                                         std::make_shared<kms_signer>()});
+auto payload = parsed_jws->verify(my_verifier);       // opaque_verifier&
+auto plaintext = parsed_jwe->decrypt(my_decrypter);   // opaque_key_decrypter&
+```
+
+Algorithms outside the object's `algorithms()` are never passed to it. Report
+backend outages as `errc::key_unavailable`, which is passed through; any other
+verifier error becomes `errc::invalid_signature`, and any other decrypter
+error the uniform `errc::decryption_failed`.
+
 ### JOSE headers
 
 `jose::header` parses and type-checks a JOSE header; `jose::join_headers`

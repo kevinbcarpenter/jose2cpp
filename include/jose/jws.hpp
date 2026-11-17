@@ -19,22 +19,29 @@
 #include "jose/error.hpp"
 #include "jose/header.hpp"
 #include "jose/jwk.hpp"
+#include "jose/opaque.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace jose {
 
+// A signing key: a private asymmetric key or an oct key for HS*, or an
+// opaque signer (HSM, KMS; see opaque.hpp).
+using signing_key = std::variant<jwk, std::shared_ptr<opaque_signer>>;
+
 // One signature to produce.
 struct jws_signer {
     signing_algorithm alg;
-    jwk key; // a private asymmetric key, or an oct key for HS*
+    signing_key key;
 
     // Extra parameters for this signature ("typ", "cty", application
     // extensions with "crit", ...). "alg" is filled in; if given, it must
@@ -124,6 +131,11 @@ public:
     // Any number of signatures; succeeds on the first that `key` verifies.
     [[nodiscard]] auto verify_multi(const jwk& key) const -> expected<verified>;
 
+    // With an opaque verifier (opaque.hpp). The signature's "alg" must be
+    // one of verifier.algorithms() (else errc::algorithm_mismatch).
+    [[nodiscard]] auto verify(opaque_verifier& verifier) const -> expected<std::vector<uint8_t>>;
+    [[nodiscard]] auto verify_multi(opaque_verifier& verifier) const -> expected<verified>;
+
     // --- Inspection ---
 
     [[nodiscard]] auto signatures() const noexcept -> std::span<const jws_signature> { return signatures_; }
@@ -155,6 +167,7 @@ private:
     auto set_detached_payload(std::span<const uint8_t> payload) -> void;
     auto signing_input(const jws_signature& sig) const -> std::vector<uint8_t>;
     auto verify_one(const jws_signature& sig, const jwk& key) const -> expected<void>;
+    auto verify_one(const jws_signature& sig, opaque_verifier& verifier) const -> expected<void>;
 
     std::vector<jws_signature> signatures_;
     std::vector<uint8_t> payload_;

@@ -14,6 +14,7 @@
 #include "jose/jwe.hpp"
 #include "jose/jwk.hpp"
 #include "jose/jws.hpp"
+#include "jose/opaque.hpp"
 #include "jose/secure_bytes.hpp"
 #include "jose/version.hpp"
 

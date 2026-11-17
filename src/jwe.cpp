@@ -616,9 +616,28 @@ auto jwe::recover_cek(const jwe_recipient_info& r, const jwk& key, const jwe_dec
     return cek;
 }
 
-auto jwe::open(const jwe_recipient_info& r, const jwk& key, const jwe_decrypt_options& options) const
+auto jwe::recover_cek(const jwe_recipient_info& r, opaque_key_decrypter& decrypter,
+                      const jwe_decrypt_options& options) const -> expected<secure_bytes> {
+    const auto algs = decrypter.algorithms();
+    if (std::find(algs.begin(), algs.end(), r.alg) == algs.end())
+        return make_error(errc::algorithm_mismatch,
+                          "the opaque decrypter does not support " + std::string(to_string(r.alg)));
+    if (r.alg == key_algorithm::RSA1_5 && !options.legacy.allow_rsa1_5)
+        return make_error(errc::legacy_algorithm_disabled,
+                          "RSA1_5 is disabled (padding-oracle risk); set legacy_options::allow_rsa1_5 to opt in");
+
+    auto cek = decrypter.decrypt_key(r.encrypted_key, r.alg, enc_, r.joined);
+    if (!cek) {
+        // An unreachable backend says nothing about the ciphertext.
+        if (cek.error().code == errc::key_unavailable) return cek;
+        return decryption_failed();
+    }
+    if (cek->size() != cek_byte_size(enc_)) return decryption_failed();
+    return cek;
+}
+
+auto jwe::open(const jwe_recipient_info& r, expected<secure_bytes> cek, const jwe_decrypt_options& options) const
     -> expected<secure_bytes> {
-    auto cek = recover_cek(r, key, options);
     if (!cek) return jose::unexpected(cek.error());
 
     auto plaintext = jose::decrypt(enc_, *cek, iv_, ciphertext_, authenticated_data(), tag_);
@@ -635,7 +654,7 @@ auto jwe::open(const jwe_recipient_info& r, const jwk& key, const jwe_decrypt_op
 auto jwe::decrypt(const jwk& key, const jwe_decrypt_options& options) const -> expected<secure_bytes> {
     if (recipients_.size() != 1)
         return bad_argument("JWE has " + std::to_string(recipients_.size()) + " recipients; use decrypt_multi");
-    return open(recipients_.front(), key, options);
+    return open(recipients_.front(), recover_cek(recipients_.front(), key, options), options);
 }
 
 auto jwe::decrypt(const jwk_set& keys, const jwe_decrypt_options& options) const -> expected<secure_bytes> {
@@ -650,7 +669,7 @@ auto jwe::decrypt(const jwk_set& keys, const jwe_decrypt_options& options) const
 
     expected<secure_bytes> last = decryption_failed();
     for (const jwk& key : candidates) {
-        last = open(r, key, options);
+        last = open(r, recover_cek(r, key, options), options);
         if (last) return last;
     }
     return last;
@@ -662,13 +681,37 @@ auto jwe::decrypt_multi(const jwk& key, const jwe_decrypt_options& options) cons
         const auto& r = recipients_[i];
         if (!check_key(r.alg, enc_, key, false) || !epk_matches(r.alg, r.joined, key)) continue;
         attempted = true;
-        auto plaintext = open(r, key, options);
+        auto plaintext = open(r, recover_cek(r, key, options), options);
         if (plaintext) return decrypted{i, std::move(*plaintext)};
         // Errors other than a failed decryption (e.g. RSA1_5 without the
         // opt-in) are the caller's to see.
         if (plaintext.error().code != errc::decryption_failed) return jose::unexpected(plaintext.error());
     }
     if (!attempted) return make_error(errc::algorithm_mismatch, "the key suits none of the JWE recipients");
+    return decryption_failed();
+}
+
+auto jwe::decrypt(opaque_key_decrypter& decrypter, const jwe_decrypt_options& options) const
+    -> expected<secure_bytes> {
+    if (recipients_.size() != 1)
+        return bad_argument("JWE has " + std::to_string(recipients_.size()) + " recipients; use decrypt_multi");
+    const auto& r = recipients_.front();
+    return open(r, recover_cek(r, decrypter, options), options);
+}
+
+auto jwe::decrypt_multi(opaque_key_decrypter& decrypter, const jwe_decrypt_options& options) const
+    -> expected<decrypted> {
+    const auto algs = decrypter.algorithms();
+    bool attempted = false;
+    for (size_t i = 0; i < recipients_.size(); ++i) {
+        const auto& r = recipients_[i];
+        if (std::find(algs.begin(), algs.end(), r.alg) == algs.end()) continue;
+        attempted = true;
+        auto plaintext = open(r, recover_cek(r, decrypter, options), options);
+        if (plaintext) return decrypted{i, std::move(*plaintext)};
+        if (plaintext.error().code != errc::decryption_failed) return jose::unexpected(plaintext.error());
+    }
+    if (!attempted) return make_error(errc::algorithm_mismatch, "the decrypter suits none of the JWE recipients");
     return decryption_failed();
 }
 
