@@ -10,6 +10,7 @@
 #include "jose/algorithm.hpp"
 #include "jose/base64url.hpp"
 #include "jose/error.hpp"
+#include "jose/jwk.hpp"
 #include "jose/secure_bytes.hpp"
 #include "jose/version.hpp"
 

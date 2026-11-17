@@ -55,6 +55,7 @@ add_library(jose
     src/base64url.cpp
     src/algorithm.cpp
     src/secure_bytes.cpp
+    src/jwk.cpp
     src/crypto/hmac.cpp
     src/crypto/rsa.cpp
     src/crypto/ec.cpp

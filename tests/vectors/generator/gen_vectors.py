@@ -1,7 +1,7 @@
 """Generate tests/vectors/*.json from RFC text files.
 
 Usage:
-    mkdir -p /tmp/rfc && for n in 3394 7515 7517 7518 7520 8032 8037; do
+    mkdir -p /tmp/rfc && for n in 3394 7515 7517 7518 7520 7638 8032 8037; do
         curl -sSfL -o /tmp/rfc/rfc$n.txt https://www.rfc-editor.org/rfc/rfc$n.txt
     done
     python3 -I tests/vectors/generator/gen_vectors.py /tmp/rfc tests/vectors
@@ -439,6 +439,77 @@ for name in ("Blank", "1 octet"):
     })
 
 # --------------------------------------------------------------------------
+# JWK parsing / thumbprints: RFC 7517 App. A + B, RFC 7638 §3.1,
+# RFC 8037 App. A, RFC 7520 §3 and the §5 encryption keys.
+# --------------------------------------------------------------------------
+def json_block_wrapped(text: str):
+    """Like json_block, but only joins RFC line wraps (strip each line and
+    concatenate), so spaces inside string values survive."""
+    i = text.index("{")
+    depth, in_str, esc = 0, False, False
+    for j in range(i, len(text)):
+        ch = text[j]
+        if in_str:
+            esc = (ch == "\\") and not esc
+            if ch == '"' and not esc:
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads("".join(l.strip() for l in text[i : j + 1].split("\n")))
+    raise ValueError("unterminated JSON")
+
+
+jwk_cases = []
+jwk_sets = []
+
+t7517 = "\n".join(rfcfig.clean_lines(rfc(7517)))
+for sub, nxt, private in [("A.1", "A.2", False), ("A.2", "A.3", True), ("A.3", "Appendix B", None)]:
+    start = t7517.rindex(f"{sub}.  Example")
+    blk = t7517[start:t7517.index(nxt, start + 5)]
+    jset = json_block_wrapped(blk)
+    assert len(jset["keys"]) == 2, sub
+    jwk_sets.append({"source": f"RFC 7517 Appendix {sub}", "jwks": jset})
+    for k in jset["keys"]:
+        jwk_cases.append({"source": f"RFC 7517 Appendix {sub}", "jwk": k,
+                          "private": k["kty"] == "oct" or "d" in k})
+
+b = t7517[t7517.rindex("Appendix B.  Example Use"):t7517.rindex("Appendix C.  Example Encrypted")]
+x5c_jwk = json_block_wrapped(b)
+assert len(x5c_jwk["x5c"]) == 1
+base64.b64decode(x5c_jwk["x5c"][0], validate=True)  # standard base64, not url
+jwk_cases.append({"source": "RFC 7517 Appendix B", "jwk": x5c_jwk, "private": False})
+
+t7638 = "\n".join(rfcfig.clean_lines(rfc(7638)))
+s31 = t7638[t7638.rindex("3.1.  Example JWK Thumbprint Computation"):t7638.rindex("3.2.  JWK Members Used")]
+tp_7638 = re.search(r"\(key ID\) value\) is:\s*\n\s*(\S+)", s31).group(1)
+jwk_cases.append({"source": "RFC 7638 §3.1", "jwk": json_block_wrapped(s31), "private": False,
+                  "thumbprint_sha256": check_b64(tp_7638)})
+assert tp_7638 == "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"
+
+a3 = t8037[t8037.rindex("A.3.  JWK Thumbprint Canonicalization"):t8037.rindex("A.4.  Ed25519 Signing")]
+tp_8037 = re.search(r'representation\s+of "([^"]+)"', a3).group(1)
+assert tp_8037 == "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k"
+jwk_cases.append({"source": "RFC 8037 Appendix A.1", "jwk": ed_jwk, "private": True,
+                  "thumbprint_sha256": tp_8037})
+a2 = t8037[t8037.rindex("A.2.  Ed25519 Public Key"):t8037.rindex("A.3.  JWK Thumbprint")]
+jwk_cases.append({"source": "RFC 8037 Appendix A.2", "jwk": json_block(a2), "private": False,
+                  "thumbprint_sha256": tp_8037})
+for c in ecdh:
+    if c["source"].startswith("RFC 8037"):
+        jwk_cases.append({"source": c["source"], "jwk": c["recipient"], "private": False})
+
+for n in (1, 2, 3, 4, 5, 6, 73, 84, 108, 120, 130, 138, 151):
+    k = fig_json(n)
+    jwk_cases.append({"source": f"RFC 7520 Figure {n}", "jwk": k,
+                      "private": k["kty"] == "oct" or "d" in k})
+
+# --------------------------------------------------------------------------
 os.makedirs(OUT_DIR, exist_ok=True)
 for name, cases in [
     ("signatures", signatures),
@@ -448,6 +519,8 @@ for name, cases in [
     ("rsa_key_encryption", rsa_kek),
     ("ecdh_es", ecdh),
     ("pbes2", pbes2),
+    ("jwk", jwk_cases),
+    ("jwk_sets", jwk_sets),
 ]:
     # Every string field except a few known non-b64 ones must decode.
     for c in cases:
