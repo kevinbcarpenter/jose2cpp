@@ -9,6 +9,7 @@ option(JOSE_BUILD_TESTS "Build tests" ON)
 option(JOSE_BUILD_BENCH "Build benchmarks" OFF)
 option(JOSE_BUILD_CLI "Build CLI tool" OFF)
 option(JOSE_FUZZ "Build fuzz targets (requires libFuzzer)" OFF)
+option(JOSE_INTEROP_GO "Add live go-jose interop tests to ctest (requires Go and network access to fetch go-jose)" OFF)
 set(JOSE_USE_STD_EXPECTED AUTO CACHE STRING
     "Use std::expected (requires C++23): AUTO, ON, or OFF (OFF = vendored expected-lite on C++20)")
 set_property(CACHE JOSE_USE_STD_EXPECTED PROPERTY STRINGS AUTO ON OFF)

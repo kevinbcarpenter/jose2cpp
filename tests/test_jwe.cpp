@@ -515,6 +515,22 @@ TEST_CASE("malformed JSON JWE", "[jwe][validation]") {
     empty["recipients"] = json::array();
     CHECK(error_of(jwe::parse(empty.dump(), kw, gcm)) == errc::invalid_token);
 
+    // Mixing general and flattened members is rejected, except for the
+    // exact copy of the first "encrypted_key" that go-jose's FullSerialize
+    // leaves at the top level, which is ignored.
+    REQUIRE(general.contains("recipients"));
+    json go_jose_style = general;
+    go_jose_style["encrypted_key"] = general["recipients"][0]["encrypted_key"];
+    auto tolerated = must(jwe::parse(go_jose_style.dump(), kw, gcm));
+    CHECK(same(must(tolerated.decrypt(key)), bytes("x")));
+    CHECK(must(tolerated.to_json()) == general); // and not re-emitted
+    json other_key = general;
+    other_key["encrypted_key"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    CHECK(error_of(jwe::parse(other_key.dump(), kw, gcm)) == errc::invalid_token);
+    json with_header = general;
+    with_header["header"] = {{"kid", "x"}};
+    CHECK(error_of(jwe::parse(with_header.dump(), kw, gcm)) == errc::invalid_token);
+
     std::string dup = good.dump();
     dup.insert(1, "\"iv\":\"AAAA\",");
     CHECK(error_of(jwe::parse(dup, kw, gcm)) == errc::serialization_error);

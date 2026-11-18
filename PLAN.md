@@ -404,7 +404,7 @@ Wire the crypto primitives into the JOSE object model.
 8. ✅ Opaque signer/verifier/decrypter interfaces — sync variants (see §Opaque Keys); async variants in item 10
 9. ✅ `task<T>` coroutine return type (header-only, zero-dependency; see §task)
 10. ✅ Async-aware JWS/JWE overloads that accept `async_opaque_signer` / `async_opaque_key_decrypter` (see §Async Opaque Keys)
-11. Interop tests: generate test vectors with go-jose (Go toolchain in CI), consume in jose2cpp and vice versa; vectors checked into `tests/vectors/`
+11. ✅ Interop tests: generate test vectors with go-jose (Go toolchain in CI), consume in jose2cpp and vice versa; vectors checked into `tests/vectors/` (see §go-jose Interop)
 
 ### Phase 3: JWT + Polish (Weeks 7-8)
 
@@ -599,6 +599,19 @@ Implementation notes for Phase 2 item 10 (`include/jose/async.hpp`):
 - **Lifetimes.** `task` is lazy, so a coroutine's reference parameters can dangle before it runs. `sign_async` therefore takes its payload, signers and options by value (the span / string_view overloads are plain functions that copy before creating the task). The member functions `verify_async` / `decrypt_async` use `*this` and the verifier/decrypter by reference, so those must outlive the task (documented; copying a JWE's ciphertext per call would be the alternative). Spans passed to the interfaces stay valid until their task finishes; implementations that hand work to another thread must copy.
 - **Shared code.** Header construction (`build_signature`), the opaque pre-checks, signature-size check, verifier/decrypter result normalization and content decryption (`jwe::open`) are shared by the sync and async paths, so they can't drift apart.
 - **Tests** use test doubles whose operations really suspend and resume on another thread. The whole suite also passes under ASan+UBSan and TSan.
+
+## go-jose Interop
+
+Implementation notes for Phase 2 item 11 (details and the vector format in `tests/interop/README.md`):
+
+- **Harness.** `tests/interop/go` (go-jose v4.1.9, pinned by `go.mod`/`go.sum`) generates and verifies; `jose_interop_gen` generates the jose2cpp side; `test_interop.cpp` verifies. Both directions cover all 13 JWS algorithms and 17 key-management × 6 content encryptions, compact and JSON, plus ECDH-ES on P-384/P-521, DEFLATE, PBES2 at each producer's default count, JSON `aad`, multi-signature and five-recipient JWE: 14 JWS + 112 JWE vectors each way. jose2cpp also re-serializes go-jose's tokens (compact byte-for-byte, JSON by value). Ed448 and X25519/X448 ECDH aren't covered: go-jose lacks them.
+- **Checked-in vectors** (`tests/vectors/interop/`) run in the normal suite with no Go needed. `-DJOSE_INTEROP_GO=ON` adds ctest fixtures that generate fresh vectors on both sides and cross-check them, and an `interop_vectors` target that refreshes the checked-in files.
+- **Known incompatibilities are tested, not skipped.** A `jws_incompatible` list holds vectors the other library must reject; if one starts being accepted, the test fails so it can be moved.
+- **Findings:**
+  - *RFC 7797 `b64=false`*: go-jose base64url-encodes the payload in the serialized token (and decodes it on parse) while signing it raw, contrary to RFC 7797 §3/§5. jose2cpp keeps the RFC behaviour (its §4 vectors pass); the two can't exchange unencoded-payload tokens.
+  - *Stray top-level `encrypted_key`*: go-jose's general JWE JSON repeats the first recipient's `encrypted_key` at the top level. jose2cpp used to reject that as mixed general/flattened, so it couldn't read any multi-recipient go-jose JWE. It now ignores exactly that copy (it isn't authenticated and nothing reads it); any other mix is still rejected.
+  - *Compact JWE with AAD*: go-jose's `CompactSerialize` silently drops `aad`, yielding an undecryptable token; jose2cpp's `compact()` refuses.
+- **CI**: `.github/workflows/ci.yml` builds and tests on Ubuntu 24.04 with Go installed and `JOSE_INTEROP_GO=ON`.
 
 ## Key Validation
 

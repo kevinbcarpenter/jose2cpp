@@ -57,7 +57,7 @@ struct jwe_encrypt_options {
     header protected_header = {};
     header shared_unprotected = {}; // JSON serializations only
     // RFC 7516 §5.1 step 14: extra authenticated data (JSON only).
-    std::vector<uint8_t> aad;
+    std::vector<uint8_t> aad = {};
     // Compress the plaintext with DEFLATE ("zip":"DEF").
     bool compress = false;
     // Put each recipient key's "kid" in its header, unless one is already set.

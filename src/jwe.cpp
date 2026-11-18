@@ -503,10 +503,17 @@ auto jwe::from_json_value(const json& j, const std::vector<key_algorithm>& algor
     // Recipients: {"header"?, "encrypted_key"?} each.
     std::vector<const json*> entries;
     if (const json* recipients = member(j, "recipients")) {
-        if (member(j, "header") || member(j, "encrypted_key"))
-            return bad_token("JWE JSON mixes general and flattened serialization members");
         if (!recipients->is_array() || recipients->empty())
             return bad_token("JWE \"recipients\" must be a non-empty array");
+        // go-jose v4's FullSerialize leaves a copy of the first recipient's
+        // "encrypted_key" at the top level of general JSON. That exact copy
+        // is ignored (it isn't authenticated and nothing reads it); any
+        // other mix of general and flattened members is rejected.
+        const json* stray_key = member(j, "encrypted_key");
+        const json* first_key = (*recipients)[0].is_object() ? member((*recipients)[0], "encrypted_key") : nullptr;
+        const bool go_jose_copy = stray_key && first_key && *stray_key == *first_key;
+        if (member(j, "header") || (stray_key && !go_jose_copy))
+            return bad_token("JWE JSON mixes general and flattened serialization members");
         for (const auto& r : *recipients) {
             if (!r.is_object()) return bad_token("JWE \"recipients\" entries must be objects");
             entries.push_back(&r);

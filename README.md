@@ -184,6 +184,10 @@ jose::init_secure_heap(1 << 16);  // 64 KiB; returns locked / not_locked / error
 
 Every algorithm is checked against the published RFC test vectors in
 [tests/vectors](tests/vectors) (RFC 3394, 7515, 7516, 7517, 7518, 7520, 7797, 8032, 8037).
+Interoperability with [go-jose](https://github.com/go-jose/go-jose) v4 is
+tested in both directions: each library verifies and decrypts tokens the other
+produced, for every algorithm both support. See
+[tests/interop](tests/interop/README.md), including the known differences.
 
 ## Building
 
@@ -263,4 +267,5 @@ or use the **vcpkg** option above to get Catch2 3.x. OpenSSL 3 and nlohmann-json
 | `JOSE_BUILD_BENCH`  | `OFF`   | Build benchmarks                     |
 | `JOSE_BUILD_CLI`    | `OFF`   | Build the CLI tool                   |
 | `JOSE_FUZZ`         | `OFF`   | Build fuzz targets (needs libFuzzer) |
+| `JOSE_INTEROP_GO`   | `OFF`   | Add live go-jose interop tests to ctest (needs Go; see [tests/interop](tests/interop/README.md)) |
 | `JOSE_USE_STD_EXPECTED` | `AUTO` | `jose::expected` implementation: `AUTO` probes for C++23 `std::expected` and falls back to the vendored [expected-lite](https://github.com/martinmoene/expected-lite) on C++20; `ON`/`OFF` force one. The choice is exported as a public compile definition so consumers always match the library build. |
