@@ -101,6 +101,15 @@ auto parsed = jose::jwe::parse(*token, {jose::key_algorithm::ECDH_ES_A256KW},
 auto opened = parsed->decrypt(key);    // expected<secure_bytes>
 ```
 
+Compact tokens, signed or encrypted, can have whitespace at either end, so
+one read from a file with a trailing newline still parses. Whitespace inside
+the token is an error, because the RFCs don't allow it and it would let the
+same token be written many ways. (go-jose's JWT parser accepts line breaks
+anywhere and refuses spaces anywhere; details in PLAN.md.) If you keep a
+revocation list or replay cache, key it on `jti` or the signed content, not
+on the token string: even a re-serialized token isn't unique, because an
+ECDSA signature has two valid forms.
+
 ### Tokens (JWT)
 
 `jose::jwt` builds signed, encrypted and nested (signed then encrypted) JWTs.

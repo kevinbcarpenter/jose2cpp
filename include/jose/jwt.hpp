@@ -253,7 +253,12 @@ private:
 };
 
 // A parsed nested JWT: decrypt() opens the JWE and parses the JWS inside
-// with the signature algorithms given to parse_signed_and_encrypted().
+// with the signature algorithms given to parse_signed_and_encrypted(). The
+// plaintext must be exactly one compact JWS; anything else (the bare
+// claims, a JSON JWS, another nested JWE) fails with parse_signed's error
+// once decrypted. Whitespace at either end of it is ignored, as for any
+// compact token (see jws::parse_compact); a line break inside it is
+// refused, though go-jose's JWT parser accepts one.
 class nested_jwt {
 public:
     // The JWE's header.
@@ -297,7 +302,8 @@ auto parse_encrypted(std::string_view token, const std::vector<key_algorithm>& k
 
 // A JWE compact serialization with "cty":"JWT" (compared case-insensitively,
 // as media types are) whose plaintext is a JWS compact serialization. Any
-// key-management algorithm may be listed.
+// key-management algorithm may be listed. `understood` applies to critical
+// extensions on both the JWE and the JWS inside.
 auto parse_signed_and_encrypted(std::string_view token, const std::vector<key_algorithm>& key_algorithms,
                                 const std::vector<content_encryption>& encryptions,
                                 const std::vector<signing_algorithm>& signature_algorithms,

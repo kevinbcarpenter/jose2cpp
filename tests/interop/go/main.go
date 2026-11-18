@@ -462,6 +462,21 @@ func generateJWT(k *keys) []jwtVector {
 			Claims: claims, Token: must(jwt.SignedAndEncrypted(signer, enc).Claims(jwtClaims).Serialize()),
 		})
 	}
+
+	// Nested and compressed ("zip":"DEF").
+	{
+		sigKey := k.signingKey(jose.HS256)
+		signer := must(jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: sigKey}, (&jose.SignerOptions{}).WithType("JWT")))
+		rcpt, decKey := k.recipient(jose.A128KW, jose.A128GCM, "")
+		opts := (&jose.EncrypterOptions{Compression: jose.DEFLATE}).WithContentType("JWT")
+		enc := must(jose.NewEncrypter(jose.A128GCM, rcpt, opts))
+		out = append(out, jwtVector{
+			Name: "nested A128KW A128GCM HS256 DEFLATE", Kind: "nested",
+			SignatureAlgorithms: []string{"HS256"}, KeyAlgorithms: []string{"A128KW"},
+			Encryption: "A128GCM", VerificationKey: publicJWK(sigKey), DecryptionKey: marshal(decKey),
+			Claims: claims, Token: must(jwt.SignedAndEncrypted(signer, enc).Claims(jwtClaims).Serialize()),
+		})
+	}
 	return out
 }
 

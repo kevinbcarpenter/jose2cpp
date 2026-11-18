@@ -519,3 +519,133 @@ TEST_CASE("parse_signed_and_encrypted", "[jwt][parse]") {
     }
     CHECK(ERR_peek_error() == 0);
 }
+
+namespace {
+
+// A KMS-style decrypter for A128KW, for nested JWTs.
+struct kw_decrypter final : opaque_key_decrypter {
+    jwk key;
+    int calls = 0;
+    explicit kw_decrypter(jwk k) : key(std::move(k)) {}
+    auto algorithms() const -> std::vector<key_algorithm> override { return {key_algorithm::A128KW}; }
+    auto decrypt_key(std::span<const uint8_t> encrypted_key, key_algorithm alg, content_encryption,
+                     const header&) -> expected<secure_bytes> override {
+        ++calls;
+        return aes_key_unwrap(alg, key.oct(), encrypted_key);
+    }
+};
+
+} // namespace
+
+TEST_CASE("nested JWT: decrypting and what the JWE may hold", "[jwt][parse][nested]") {
+    const auto kek = with_kid(must(jwk::generate_oct(16)), "kek-1");
+    const auto hmac = must(jwk::generate_oct(32));
+    const std::vector<key_algorithm> kas{key_algorithm::A128KW};
+    const std::vector<content_encryption> encs{content_encryption::A128GCM};
+    const std::vector<signing_algorithm> sigs{signing_algorithm::HS256};
+
+    // Encrypts any plaintext as a nested JWT's JWE would be.
+    const auto wrap = [&](std::string_view plaintext, bool compress = false) {
+        jwe_encrypt_options o{.compress = compress};
+        REQUIRE(o.protected_header.set("cty", "JWT"));
+        return must(must(jwe::encrypt(plaintext, content_encryption::A128GCM, {key_algorithm::A128KW, kek}, o))
+                        .compact());
+    };
+    const auto open = [&](const std::string& token) -> expected<json> {
+        auto parsed = jwt::parse_signed_and_encrypted(token, kas, encs, sigs);
+        if (!parsed) return jose::unexpected(parsed.error());
+        auto inner = parsed->decrypt(kek);
+        if (!inner) return jose::unexpected(inner.error());
+        return inner->claims(hmac);
+    };
+    const auto inner_jwt = must(jwt::signed_token({signing_algorithm::HS256, hmac}).claims(k_standard).serialize());
+
+    SECTION("a compact JWS inside is read") {
+        CHECK(must(open(wrap(inner_jwt))) == k_standard);
+        CHECK(must(open(wrap(inner_jwt + "\n"))) == k_standard); // whitespace at the ends is ignored
+    }
+    SECTION("compressed (\"zip\":\"DEF\") works") {
+        const auto zipped = wrap(inner_jwt, true);
+        const auto parsed = must(jwt::parse_signed_and_encrypted(zipped, kas, encs, sigs));
+        const auto* zip = parsed.header().get("zip");
+        REQUIRE(zip);
+        CHECK(*zip == "DEF");
+        CHECK(must(open(zipped)) == k_standard);
+        const auto built = must(jwt::signed_and_encrypted({signing_algorithm::HS256, hmac}, content_encryption::A128GCM,
+                                                          {key_algorithm::A128KW, kek}, {}, {.compress = true})
+                                    .claims(k_standard)
+                                    .serialize());
+        CHECK(must(open(built)) == k_standard);
+    }
+    SECTION("decrypting with a key set or an opaque decrypter") {
+        const auto token = wrap(inner_jwt);
+        const auto parsed = must(jwt::parse_signed_and_encrypted(token, kas, encs, sigs));
+        auto set = must(jwk_set::from_json(json{{"keys", json::array({must(kek.to_json())})}}));
+        CHECK(must(must(parsed.decrypt(set)).claims(hmac)) == k_standard);
+        kw_decrypter kms(kek);
+        CHECK(must(must(parsed.decrypt(kms)).claims(hmac)) == k_standard);
+        CHECK(kms.calls == 1);
+    }
+    SECTION("anything but a compact JWS inside is refused, after decrypting") {
+        const auto flattened = must(must(jws::sign(k_standard.dump(), {signing_algorithm::HS256, hmac}))
+                                        .to_json_string(jws_json_format::flattened));
+        struct bad_case {
+            const char* what;
+            std::string plaintext;
+            errc code; // parse_signed's, for the same string
+        };
+        const std::vector<bad_case> bad{
+            {"the bare claims", R"({"sub":"kevin"})", errc::invalid_token},    // not three parts
+            {"a flattened JSON JWS", flattened, errc::invalid_token},          // not three parts
+            {"a JWS with a line break inside", inner_jwt.substr(0, 20) + "\r\n" + inner_jwt.substr(20),
+             errc::invalid_base64}, // go-jose's JWT parser accepts it
+            {"an unencoded-payload JWS", raw_jws(R"({"sub":"kevin"})", hmac, {.b64 = false}), errc::invalid_token},
+            {"empty", "", errc::invalid_token},
+            {"a JWT nested twice", wrap(inner_jwt), errc::invalid_token}, // five parts
+        };
+        for (const auto& c : bad) {
+            INFO(c.what);
+            const auto token = wrap(c.plaintext);
+            auto parsed = must(jwt::parse_signed_and_encrypted(token, kas, encs, sigs)); // the JWE itself is fine
+            auto inner = parsed.decrypt(kek);
+            CHECK(error_of(inner) == c.code);
+            CHECK(error_of(jwt::parse_signed(c.plaintext, sigs)) == c.code);
+        }
+    }
+    SECTION("the decompression cap applies") {
+        const std::string big(100000, 'a');
+        const auto padded = must(jwt::signed_token({signing_algorithm::HS256, hmac})
+                                     .claims(k_standard)
+                                     .claims({{"pad", big}})
+                                     .serialize());
+        const auto parsed = must(jwt::parse_signed_and_encrypted(wrap(padded, true), kas, encs, sigs));
+        CHECK(error_of(parsed.decrypt(kek, {.max_decompressed_size = 1000})) == errc::compression_error);
+        CHECK(must(parsed.decrypt(kek, {.max_decompressed_size = 200000})).unsafe_claims());
+    }
+    SECTION("understood critical extensions cover both the JWE and the JWS inside") {
+        const auto crit = must(header::from_json({{"crit", {"x-audit"}}, {"x-audit", "42"}}));
+        const extension_set understood{"x-audit"};
+
+        // On the inner JWS.
+        const auto inner_crit = must(
+            jwt::signed_token({.alg = signing_algorithm::HS256, .key = hmac, .protected_header = crit})
+                .claims(k_standard)
+                .serialize());
+        const auto token = wrap(inner_crit);
+        CHECK(error_of(must(jwt::parse_signed_and_encrypted(token, kas, encs, sigs)).decrypt(kek)) ==
+              errc::unrecognized_critical_extension);
+        CHECK(must(must(must(jwt::parse_signed_and_encrypted(token, kas, encs, sigs, understood)).decrypt(kek))
+                       .claims(hmac)) == k_standard);
+
+        // On the JWE, refused before anything is decrypted.
+        jwe_encrypt_options o{.protected_header = crit};
+        REQUIRE(o.protected_header.set("cty", "JWT"));
+        const auto outer_crit = must(
+            must(jwe::encrypt(inner_jwt, content_encryption::A128GCM, {key_algorithm::A128KW, kek}, o)).compact());
+        CHECK(error_of(jwt::parse_signed_and_encrypted(outer_crit, kas, encs, sigs)) ==
+              errc::unrecognized_critical_extension);
+        CHECK(must(must(must(jwt::parse_signed_and_encrypted(outer_crit, kas, encs, sigs, understood)).decrypt(kek))
+                       .claims(hmac)) == k_standard);
+    }
+    CHECK(ERR_peek_error() == 0);
+}

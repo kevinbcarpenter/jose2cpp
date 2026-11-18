@@ -488,3 +488,35 @@ TEST_CASE("malformed JSON JWS", "[jws][validation]") {
     CHECK(must(must(jws::parse_detached(without("payload"), bytes("x"), hs)).verify(key)) == bytes("x"));
     CHECK(error_of(jws::parse_detached(good.dump(), bytes("x"), hs)) == errc::invalid_token);
 }
+
+TEST_CASE("compact JWS: whitespace at the ends is ignored, inside it isn't", "[jws][whitespace]") {
+    const auto key = must(jwk::generate_oct(32));
+    const auto token = must(must(jws::sign(std::string_view("hello"), {signing_algorithm::HS256, key})).compact());
+    const std::vector<signing_algorithm> algs{signing_algorithm::HS256};
+
+    for (const auto& padded : {token + "\n", token + "\r\n", " \t" + token, "\n" + token + "  \n"}) {
+        auto parsed = must(jws::parse_compact(padded, algs));
+        CHECK(must(parsed.verify(key)) == std::vector<uint8_t>{'h', 'e', 'l', 'l', 'o'});
+        CHECK(must(parsed.compact()) == token); // one spelling, whatever came in
+        CHECK(must(jws::parse(padded, algs)).signatures().size() == 1);
+    }
+    const auto detached = must(must(jws::sign(std::string_view("hello"), {signing_algorithm::HS256, key})).compact_detached());
+    const std::vector<uint8_t> hello{'h', 'e', 'l', 'l', 'o'};
+    CHECK(must(jws::parse_detached(detached + "\n", hello, algs)).verify(key));
+
+    const auto dot = token.find('.');
+    for (const auto& inside : {token.substr(0, 5) + "\n" + token.substr(5), token.substr(0, dot) + " " + token.substr(dot),
+                               token.substr(0, token.size() - 3) + "\r\n" + token.substr(token.size() - 3)}) {
+        auto r = jws::parse_compact(inside, algs);
+        CHECK(error_of(r) == errc::invalid_base64);
+        CHECK(r.error().message.find("whitespace") != std::string::npos);
+    }
+    // An unencoded payload is taken as is (RFC 7797 §5.2); only '.' is refused.
+    const auto unencoded = must(must(jws::sign(std::string_view("a b\n c"), {signing_algorithm::HS256, key},
+                                               {.b64 = false}))
+                                    .compact());
+    CHECK(must(must(jws::parse_compact(unencoded + "\n", algs)).verify(key)) ==
+          std::vector<uint8_t>{'a', ' ', 'b', '\n', ' ', 'c'});
+    CHECK(error_of(jws::parse_compact("  \n", algs)) == errc::invalid_token);
+    CHECK(ERR_peek_error() == 0);
+}

@@ -568,3 +568,31 @@ TEST_CASE("PBES2 and AES-GCM-KW header parameters are checked", "[jwe][validatio
     CHECK(error_of(must(jwe::parse(j.dump(), {key_algorithm::A128GCMKW}, {content_encryption::A128GCM})).decrypt(kek)) ==
           errc::invalid_header);
 }
+
+TEST_CASE("compact JWE: whitespace at the ends is ignored, inside it isn't", "[jwe][whitespace]") {
+    const auto kek = must(jwk::generate_oct(16));
+    const auto token = must(must(jwe::encrypt(std::string_view("hello"), content_encryption::A128GCM,
+                                              {key_algorithm::A128KW, kek}))
+                                .compact());
+    const std::vector<key_algorithm> kas{key_algorithm::A128KW};
+    const std::vector<content_encryption> encs{content_encryption::A128GCM};
+
+    for (const auto& padded : {token + "\n", " \t" + token + "\r\n"}) {
+        auto parsed = jwe::parse_compact(padded, kas, encs);
+        REQUIRE(parsed);
+        auto plaintext = parsed->decrypt(kek);
+        REQUIRE(plaintext);
+        CHECK(std::string(plaintext->begin(), plaintext->end()) == "hello");
+        CHECK(*parsed->compact() == token);
+        CHECK(jwe::parse(padded, kas, encs));
+    }
+    const auto dot = token.find('.');
+    for (const auto& inside : {token.substr(0, 5) + "\n" + token.substr(5), token.substr(0, dot) + " " + token.substr(dot),
+                               token.substr(0, token.size() - 3) + "\r\n" + token.substr(token.size() - 3)}) {
+        auto r = jwe::parse_compact(inside, kas, encs);
+        REQUIRE_FALSE(r);
+        CHECK(r.error().code == errc::invalid_base64);
+        CHECK(r.error().message.find("whitespace") != std::string::npos);
+    }
+    CHECK(ERR_peek_error() == 0);
+}

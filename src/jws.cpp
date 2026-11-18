@@ -385,6 +385,7 @@ auto parse_compact_parts(std::string_view input) -> expected<std::array<std::str
 auto jws::parse_compact(std::string_view input, const std::vector<signing_algorithm>& algorithms,
                         const extension_set& understood) -> expected<jws> {
     if (auto r = require_algorithms(algorithms); !r) return jose::unexpected(r.error());
+    input = internal::trim_compact(input);
     auto parts = parse_compact_parts(input);
     if (!parts) return jose::unexpected(parts.error());
     const auto& [prot, payload, signature] = *parts;
@@ -495,6 +496,7 @@ auto jws::parse_detached(std::string_view input, std::span<const uint8_t> payloa
         if (!j) return jose::unexpected(j.error());
         return from_json_value(*j, algorithms, understood, &payload);
     }
+    input = internal::trim_compact(input);
     auto parts = parse_compact_parts(input);
     if (!parts) return jose::unexpected(parts.error());
     if (!(*parts)[1].empty()) return bad_token("detached JWS must have an empty payload part");

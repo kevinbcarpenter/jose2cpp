@@ -112,6 +112,10 @@ public:
     static auto parse(std::string_view input, const std::vector<key_algorithm>& algorithms,
                       const std::vector<content_encryption>& encryptions, const extension_set& understood = {})
         -> expected<jwe>;
+    // Leading and trailing whitespace (space, tab, CR, LF) is ignored, so a
+    // token with a trailing newline parses. Whitespace inside it is refused
+    // (errc::invalid_base64 when that part is decoded). See PLAN.md
+    // §Compact whitespace for how this differs from go-jose.
     static auto parse_compact(std::string_view input, const std::vector<key_algorithm>& algorithms,
                               const std::vector<content_encryption>& encryptions,
                               const extension_set& understood = {}) -> expected<jwe>;

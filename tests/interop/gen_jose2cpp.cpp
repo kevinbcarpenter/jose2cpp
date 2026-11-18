@@ -282,12 +282,12 @@ auto encrypted_jwt_vector(key_source& keys, key_algorithm alg, content_encryptio
     return v;
 }
 
-auto nested_jwt_vector(key_source& keys, key_algorithm alg, content_encryption enc, signing_algorithm sig)
-    -> json {
+auto nested_jwt_vector(key_source& keys, key_algorithm alg, content_encryption enc, signing_algorithm sig,
+                       bool compress = false) -> json {
     const auto signing_key = signing_key_for(keys, sig);
     const auto r = recipient_for(keys, alg, enc);
     auto v = jwt_vector("nested " + std::string(to_string(alg)) + " " + std::string(to_string(enc)) + " " +
-                            std::string(to_string(sig)),
+                            std::string(to_string(sig)) + (compress ? " DEFLATE" : ""),
                         "nested");
     v["signature_algorithms"] = json::array({to_string(sig)});
     v["key_algorithms"] = json::array({to_string(alg)});
@@ -295,7 +295,9 @@ auto nested_jwt_vector(key_source& keys, key_algorithm alg, content_encryption e
     v["verification_key"] = public_json(signing_key);
     v["decryption_key"] = key_json(r.key);
     v["token"] =
-        must(jwt::signed_and_encrypted({sig, signing_key}, enc, r.recipient).claims(k_jwt_claims).serialize(),
+        must(jwt::signed_and_encrypted({sig, signing_key}, enc, r.recipient, {}, {.compress = compress})
+                 .claims(k_jwt_claims)
+                 .serialize(),
              v["name"]);
     return v;
 }
@@ -333,6 +335,8 @@ auto generate_jwt(key_source& keys) -> json {
     out.push_back(nested_jwt_vector(keys, key_algorithm::dir, content_encryption::A256GCM, signing_algorithm::ES256));
     out.push_back(nested_jwt_vector(keys, key_algorithm::A256GCMKW, content_encryption::A256CBC_HS512,
                                     signing_algorithm::EdDSA));
+    out.push_back(nested_jwt_vector(keys, key_algorithm::A128KW, content_encryption::A128GCM, signing_algorithm::HS256,
+                                    true));
     return out;
 }
 

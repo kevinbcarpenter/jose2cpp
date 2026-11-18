@@ -114,6 +114,11 @@ public:
     // Compact or JSON, chosen by the first non-whitespace character.
     static auto parse(std::string_view input, const std::vector<signing_algorithm>& algorithms,
                       const extension_set& understood = {}) -> expected<jws>;
+    // Leading and trailing whitespace (space, tab, CR, LF) is ignored, so a
+    // token with a trailing newline parses. Whitespace inside a base64url
+    // part is refused (errc::invalid_base64 when that part is decoded); an
+    // unencoded (b64=false) payload is taken as is, apart from '.'. See
+    // PLAN.md §Compact whitespace for how this differs from go-jose.
     static auto parse_compact(std::string_view input, const std::vector<signing_algorithm>& algorithms,
                               const extension_set& understood = {}) -> expected<jws>;
     static auto parse_json(std::string_view input, const std::vector<signing_algorithm>& algorithms,

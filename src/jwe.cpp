@@ -402,6 +402,7 @@ auto jwe::parse_compact(std::string_view input, const std::vector<key_algorithm>
                         const std::vector<content_encryption>& encryptions, const extension_set& understood)
     -> expected<jwe> {
     if (auto r = require_algorithms(algorithms, encryptions); !r) return jose::unexpected(r.error());
+    input = internal::trim_compact(input);
 
     std::array<std::string_view, 5> parts;
     size_t start = 0;

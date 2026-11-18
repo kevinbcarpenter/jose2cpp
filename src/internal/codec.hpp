@@ -21,6 +21,18 @@ namespace jose::internal {
 // names the document in error messages ("JWK", "JOSE header", ...).
 auto parse_json_strict(std::string_view text, std::string_view what) -> expected<nlohmann::json>;
 
+// Strips leading and trailing JSON whitespace (space, tab, CR, LF) from a
+// compact JWS or JWE, so a token read from a file, an environment variable
+// or a hand-copied header still parses, as the JSON serializations already
+// do. Whitespace inside the token is still refused: allowing it would give
+// one token many spellings (go-jose strips it everywhere).
+inline auto trim_compact(std::string_view s) -> std::string_view {
+    constexpr std::string_view ws = " \t\r\n";
+    const auto first = s.find_first_not_of(ws);
+    if (first == std::string_view::npos) return {};
+    return s.substr(first, s.find_last_not_of(ws) - first + 1);
+}
+
 // Standard (padded) base64, used by "x5c" (RFC 7515 §4.1.6, RFC 7517 §4.7).
 auto b64std_decode(std::string_view s) -> expected<std::vector<uint8_t>>;
 auto b64std_encode(std::span<const uint8_t> in) -> std::string;

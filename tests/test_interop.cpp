@@ -208,6 +208,13 @@ auto check_jwt(const json& v) -> void {
     CHECK(registered.subject == claims.at("sub").get<std::string>());
     CHECK(registered.expiry == jwt::numeric_date::from_seconds(claims.at("exp").get<std::int64_t>()));
     CHECK(json(registered.audience) == claims.at("aud"));
+    // A vector named for DEFLATE really is compressed.
+    if (v.at("name").get<std::string>().ends_with(" DEFLATE")) {
+        const auto token = v.at("token").get<std::string>();
+        const auto bytes = must(base64url::decode(std::string_view(token).substr(0, token.find('.'))), "header");
+        const auto header = json::parse(bytes.begin(), bytes.end());
+        CHECK(header.value("zip", "") == "DEF");
+    }
 }
 
 // go-jose's claims validation, case by case. The only difference is at the
@@ -259,8 +266,13 @@ auto check_file(const json& file) -> void {
     size_t jwe_count = 0;
     for (const auto& v : file.at("jws")) jws_count += check_jws(v);
     for (const auto& v : file.at("jwe")) jwe_count += check_jwe(v);
-    for (const auto& v : file.at("jwt")) check_jwt(v);
+    size_t compressed_nested = 0;
+    for (const auto& v : file.at("jwt")) {
+        check_jwt(v);
+        if (v.at("kind") == "nested" && v.at("name").get<std::string>().ends_with(" DEFLATE")) ++compressed_nested;
+    }
     CHECK_FALSE(file.at("jwt").empty());
+    CHECK(compressed_nested >= 1); // check_jwt confirmed each one's "zip" header
     // The other library's incompatibilities must be rejected; jose2cpp's
     // own (RFC-conformant) ones must verify.
     const bool own = file.value("producer", "").starts_with("jose2cpp");

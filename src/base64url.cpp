@@ -76,6 +76,12 @@ auto decode(std::string_view input) -> expected<secure_bytes> {
         return secure_bytes{};
     }
 
+    // Checked before the length, so whitespace is reported as such whatever
+    // length it leaves.
+    if (sv.find_first_of(" \t\r\n") != std::string_view::npos)
+        return make_error(errc::invalid_base64,
+                          "whitespace inside base64url (compact tokens may only have it at either end)");
+
     // RFC 7515 §2: base64url is unpadded — '=' is rejected below via the
     // decode table. A valid unpadded encoding is never length ≡ 1 (mod 4).
     if (sv.size() % 4 == 1) {

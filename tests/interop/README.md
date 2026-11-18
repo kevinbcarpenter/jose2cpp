@@ -11,16 +11,18 @@ each other's output (PLAN.md Phase 2 item 11).
 Both directions cover every JWS algorithm and every JWE key-management
 algorithm × content encryption that go-jose supports, in compact and JSON
 form, plus ECDH-ES on P-384/P-521, DEFLATE, PBES2 at the producer's default
-iteration count, the JSON `aad` member, multiple signatures and five-recipient
-JWE. They also cover JWTs: signed with six algorithms, encrypted with `dir`,
-AES key wrap and AES-GCM key wrap, and nested, each checked down to the
-claims. One JWT each way is built from the library's own claims type
-(go-jose's `jwt.Claims`, jose2cpp's `jwt::registered_claims`) with a single
-audience, which both write as a plain string, and every JWT's claims are also
-read back through the other library's claims type. go-jose also writes out
-40 claims-validation cases with its own answers (see below), and jose2cpp has
-to agree with each one. Consumers verify or decrypt with every listed key and (jose2cpp)
-re-serialize the parsed object, compact byte-for-byte and JSON by value.
+iteration count, the JSON `aad` member, multiple signatures and
+five-recipient JWE. They also cover JWTs: signed with six algorithms,
+encrypted with `dir`, AES key wrap and AES-GCM key wrap, and nested (one of
+them compressed with DEFLATE), each checked down to the claims. One JWT each
+way is built from the library's own claims type (go-jose's `jwt.Claims`,
+jose2cpp's `jwt::registered_claims`) with a single audience, which both
+write as a plain string, and every JWT's claims are also read back through
+the other library's claims type. go-jose also writes out 40
+claims-validation cases with its own answers (see below), and jose2cpp has
+to agree with each one. Consumers verify or decrypt with every listed key
+and (jose2cpp) re-serialize the parsed object, compact byte-for-byte and
+JSON by value.
 
 Not covered because go-jose doesn't support them: Ed448, and ECDH-ES with
 X25519/X448.
@@ -119,3 +121,9 @@ into `jws` or `jwt`.
   plus the leeway as expired; go-jose's `ValidateWithLeeway` only rejects
   after it. Three `jwt_validation` cases sit on that instant, and the C++
   test requires go-jose to still accept them and jose2cpp to reject them.
+- **Whitespace in compact tokens.** go-jose's JWT parser (through Go's
+  base64 decoder) accepts CR and LF anywhere in a token and refuses spaces
+  and tabs anywhere, even at the ends; its deprecated generic parsers strip
+  all whitespace. jose2cpp ignores whitespace only at the ends and refuses
+  it inside a base64url part. See PLAN.md §Compact whitespace. The interop
+  tokens have none.
