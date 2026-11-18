@@ -69,3 +69,10 @@ vcpkg_installed/
 Testing/
 .cache/
 __pycache__/
+
+# libFuzzer output
+crash-*
+leak-*
+timeout-*
+oom-*
+slow-unit-*

@@ -91,11 +91,15 @@ jose2cpp/
 │   └── vectors/               # RFC test vectors as JSON
 ├── fuzz/
 │   ├── CMakeLists.txt
+│   ├── fuzz_common.hpp      # algorithms, keys, check()
+│   ├── fuzz_base64url.cpp
 │   ├── fuzz_jwk.cpp
 │   ├── fuzz_jws.cpp
 │   ├── fuzz_jwe.cpp
 │   ├── fuzz_jwt.cpp
-│   ├── fuzz_base64url.cpp
+│   ├── fuzz_inflate.cpp
+│   ├── replay_main.cpp      # main() where there's no libFuzzer
+│   ├── make_corpus.py       # seeds from tests/vectors
 │   └── corpus/
 ├── benchmarks/
 │   └── bench_main.cpp
@@ -420,7 +424,7 @@ High-level JWT API and production readiness.
 6. ✅ Signed-then-encrypted JWT (`cty: "JWT"` handling) on the parse side; building nested tokens is item 1 (see §JWT)
 7. ✅ Optional async JWKS URL fetcher with pluggable HTTP backend, caching, TTL refresh (see §JWKS Fetcher)
 8. ✅ CLI tool (`jose-cli`): sign, verify, encrypt, decrypt, expand, generate-key (see §CLI)
-9. Fuzz targets (libFuzzer): `jwk::from_json`, `jws::parse`, `jwe::parse`, `jwt::parse_signed` (see §Fuzz Testing)
+9. ✅ Fuzz targets (libFuzzer): `jwk::from_json`, `jws::parse`, `jwe::parse`, the `jwt::parse_*` and registered claims, base64url, DEFLATE inflation (see §Fuzz Testing)
 10. API documentation (Doxygen)
 11. Benchmarks vs. go-jose (sign/verify throughput, parse latency)
 12. ✅ Async opaque keys for JWT: build with an `async_opaque_signer` and parse with `async_opaque_verifier` / `async_opaque_key_decrypter` (`claims_async`, `nested_jwt::decrypt_async`), reusing the allowlists and `understood` given at parse time so a caller can't widen them on a second call. (see §Async Opaque Keys)
@@ -719,25 +723,20 @@ Behavior:
 
 ## Fuzz Testing
 
-Fuzz targets using libFuzzer, integrated into the CMake build via `-DJOSE_FUZZ=ON`:
+Phase 3 item 9. libFuzzer targets in `fuzz/`, built with `-DJOSE_FUZZ=ON`.
 
-**Targets:**
-- `fuzz_jwk_from_json` — arbitrary JSON → `jwk::from_json`
-- `fuzz_jws_parse` — arbitrary bytes → `jws::parse` (with all algorithms allowed)
-- `fuzz_jwe_parse` — arbitrary bytes → `jwe::parse`
-- `fuzz_jwt_parse` — arbitrary bytes → `jwt::parse_signed`
-- `fuzz_base64url` — round-trip: decode arbitrary bytes, encode result, verify match
-
-**Structure:**
-```
-fuzz/
-├── CMakeLists.txt
-├── fuzz_jwk.cpp
-├── fuzz_jws.cpp
-├── fuzz_jwe.cpp
-├── fuzz_jwt.cpp
-├── fuzz_base64url.cpp
-└── corpus/              # seed inputs from RFC test vectors
-```
+- **Targets** (each also checks invariants, and aborts when one breaks):
+  - `fuzz_base64url`: `decode` then `encode` gives back the input (strict decoding accepts one spelling only), and `encode` then `decode` gives back the bytes.
+  - `fuzz_jwk`: `jwk::from_json`, `jwk_set::from_json`, and `jwk::from_pem` when the input contains `-----BEGIN` (OpenSSL's decoder setup costs about 1 ms a call, which held the whole target to about 1K executions a second). A parsed key serializes and parses again with the same type, privacy and thumbprint, and its public half has the same thumbprint; `check_algorithm` / `check_operation` run for every algorithm and operation.
+  - `fuzz_jws`: `jws::parse` with every algorithm allowed, and `parse_detached`. A parsed JWS re-serializes (JSON and, where it can, compact) to one that parses to the same payload, algorithms, protected headers and signatures, and serializing that gives exactly the same text again; `verify_multi` runs with a key of every kind, and `verify` with all of them as a JWK Set.
+  - `fuzz_jwe`: `jwe::parse` with every algorithm and encryption allowed. The same round trips, with the text-identical second serialization covering the headers, `aad`, `iv`, ciphertext and `tag`, then `decrypt_multi` with every key and `decrypt` with the set, RSA1_5 enabled and `max_pbes2_iterations` lowered to 20,000 so a high `p2c` doesn't slow the fuzzer.
+  - `fuzz_jwt`: `parse_signed`, `parse_encrypted`, `parse_signed_and_encrypted` and their `claims` / `decrypt`; the unverified claims, and the input itself read as JSON, go through `jwt::decode<registered_claims>`, `validate` at extreme times and leeways, and a JSON round trip that must give back the same claims.
+  - `fuzz_inflate`: `internal::inflate_raw` with a 1 MiB cap and with caps of 0, 1 and 100: output never exceeds the cap, and what inflates deflates and inflates back unchanged. The library only inflates after a JWE authenticates, which forged tokens never reach, so the inflater gets its own target.
+- **Keys** (`fuzz/fuzz_common.hpp`, `fuzz/fuzz_keys.inc`): one of every kind (RSA 2048, P-256/384/521, Ed25519, Ed448, X25519, X448, oct 16-64 octets, a password), fixed JWKs generated once with `jose-cli generate-key` (with `alg` and `use` removed), so a crash reproduces in another process. RSA1_5 decryption still uses a random fallback CEK by design (oracle protection), so that one path isn't deterministic. Fuzzed tokens won't verify or decrypt, but everything up to the cryptography runs, plus the key checks.
+- **Build.** `JOSE_FUZZ` probes for `-fsanitize=fuzzer`. With it, the library is compiled with `-fsanitize=fuzzer-no-link` for coverage and carries it as a public link option, so the tests and CLI link the coverage runtime with any `JOSE_FUZZ_SANITIZERS`, empty included (they used to fail with an undefined `__sancov_lowest_stack` when the sanitizers were empty); the targets compile and link with `-fsanitize=fuzzer`. Without it (Apple clang, GCC), each target links `fuzz/replay_main.cpp` and runs the files or directories it's given once. The whole build gets `JOSE_FUZZ_SANITIZERS` (default `address,undefined`, no recovery) and `-UNDEBUG -D_GLIBCXX_ASSERTIONS`, so expected-lite's assert on dereferencing an error and libstdc++'s checks stay on in any build type (clang 18 with libstdc++ 13 picks expected-lite, since clang 18 doesn't advertise the concepts level libstdc++'s `<expected>` wants). MSVC is refused with a message. Replay tests have a 900 s timeout: GCC at `-O0` takes about 90 s on the JWE corpus. ctest replays the corpus either way (`-runs=0` with libFuzzer, so the checked-in corpus isn't written to).
+- **Corpus.** `fuzz/corpus/<target>/`, 902 seeds (about 330 KB): 889 written by `fuzz/make_corpus.py` from the RFC vectors and both directions of the go-jose interop vectors, plus hand-made claims at the date limits and raw DEFLATE streams (whole and truncated), and 13 PEM keys and certificates for `fuzz_jwk` made once with `openssl`. Seeds are named by SHA-1 so rerunning the script adds only new ones. The checked-in corpus is seeds only; units found by fuzzing aren't merged back, to keep the repository small and the seeds reproducible.
+- **CI.** A `fuzz` job on Ubuntu 24.04 with clang 18 builds the targets, replays the corpus, fuzzes each target for 60 s on a scratch copy of its corpus (every target runs even if one fails; the step fails at the end), symbolizes ASan traces with `llvm-symbolizer`, and uploads any crashing input as an artifact.
+- **First run** (clang 18 in an `ubuntu:24.04` container on an M-series Mac, two minutes per target, ASan+UBSan): no crashes, leaks, timeouts or broken invariants. Executions: base64url 15.1M, jwk 140K, jws 3.9M, jwe 2.8M, jwt 5.7M, inflate 14.0M.
+- **Found in review: deep JSON.** A JWS or JWE JSON with an unprotected header nested about 20,000 levels (about 40 KB) overflowed the stack under ASan: `header::from_json` copies the value, and nlohmann's copy and serialization recurse. libFuzzer never got there, because `max_len` follows the largest seed (about 4 KB). Fixed in `internal::parse_json_strict`, which every library parse goes through: nesting more than 128 levels below the top is `errc::serialization_error`. Regression tests in `tests/test_limits.cpp` (each kind of token, a JWK, a JWK Set, JWT claims, and the 128/129 boundary); with the limit lifted they crash under ASan.
 
 Fuzz targets must never crash, throw, or leak on any input. `std::expected` error returns are the expected failure mode. Any abort, ASAN violation, or undefined behavior is a bug.

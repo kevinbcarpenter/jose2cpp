@@ -35,3 +35,48 @@ jobs:
 
       - name: Test
         run: ctest --preset system --output-on-failure
+
+  fuzz:
+    name: Fuzz (clang 18, libFuzzer, ASan+UBSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            nlohmann-json3-dev libssl-dev zlib1g-dev cmake ninja-build clang-18 libclang-rt-18-dev llvm-18
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++-18
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo -DJOSE_FUZZ=ON -DJOSE_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build build-fuzz
+
+      - name: Replay the corpus
+        run: ctest --test-dir build-fuzz --output-on-failure
+
+      - name: Fuzz each target for 60 seconds
+        env:
+          ASAN_SYMBOLIZER_PATH: /usr/lib/llvm-18/bin/llvm-symbolizer
+        run: |
+          mkdir -p artifacts
+          failed=""
+          for t in base64url jwk jws jwe jwt inflate; do
+            mkdir -p work/$t && cp fuzz/corpus/$t/* work/$t/
+            echo "::group::$t"
+            build-fuzz/fuzz/fuzz_$t -max_total_time=60 -timeout=10 -rss_limit_mb=2048 \
+              -print_final_stats=1 -artifact_prefix=artifacts/$t- work/$t || failed="$failed $t"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then echo "::error::fuzzing failed:$failed"; exit 1; fi
+
+      - name: Keep crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: artifacts/

@@ -45,6 +45,44 @@ find_package(OpenSSL 3.0 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(ZLIB REQUIRED) # raw DEFLATE for JWE "zip":"DEF" (RFC 7516 §4.1.3)
 
+# Fuzzing (PLAN.md §Fuzz Testing). Everything, the library included, is
+# built with JOSE_FUZZ_SANITIZERS; with a compiler that has libFuzzer the
+# library is also instrumented for coverage and the targets are fuzzers,
+# otherwise they replay their corpus (fuzz/replay_main.cpp).
+set(JOSE_FUZZ_SANITIZERS "address,undefined" CACHE STRING "Sanitizers for the fuzz build (-fsanitize=...); empty for none")
+if(JOSE_FUZZ)
+    if(MSVC)
+        message(FATAL_ERROR "JOSE_FUZZ needs clang or GCC (the fuzz flags are -fsanitize=...); "
+                            "build the fuzz targets with clang on Linux or macOS")
+    endif()
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_LINK_OPTIONS -fsanitize=fuzzer)
+    set(CMAKE_REQUIRED_FLAGS -fsanitize=fuzzer)
+    check_cxx_source_compiles([[
+        #include <cstddef>
+        #include <cstdint>
+        extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t*, std::size_t) { return 0; }
+    ]] JOSE_HAS_LIBFUZZER)
+    unset(CMAKE_REQUIRED_LINK_OPTIONS)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(JOSE_HAS_LIBFUZZER)
+        # Coverage instrumentation goes on the library and the fuzz targets
+        # (below and in fuzz/); anything else linking the library gets the
+        # coverage runtime through its public link option.
+        message(STATUS "Fuzz targets: libFuzzer")
+    else()
+        message(STATUS "Fuzz targets: corpus replayers (this compiler has no libFuzzer)")
+    endif()
+    if(JOSE_FUZZ_SANITIZERS)
+        add_compile_options(-fsanitize=${JOSE_FUZZ_SANITIZERS} -fno-omit-frame-pointer -fno-sanitize-recover=all)
+        add_link_options(-fsanitize=${JOSE_FUZZ_SANITIZERS})
+    endif()
+    # Keep assertions in any build type: expected-lite checks dereferencing
+    # an error with assert(), and libstdc++'s checks catch bad optional and
+    # vector access.
+    add_compile_options(-UNDEBUG -D_GLIBCXX_ASSERTIONS)
+endif()
+
 # Version header: project(VERSION) above is the single source of truth.
 # (Keep vcpkg.json's "version" field in sync when tagging a release.)
 configure_file(
@@ -100,6 +138,13 @@ target_link_libraries(jose
         ZLIB::ZLIB
 )
 
+if(JOSE_FUZZ AND JOSE_HAS_LIBFUZZER)
+    # The instrumented library needs the coverage runtime in whatever links
+    # it (the tests and the CLI too), so the link option is public.
+    target_compile_options(jose PRIVATE -fsanitize=fuzzer-no-link)
+    target_link_options(jose PUBLIC -fsanitize=fuzzer-no-link)
+endif()
+
 if(_jose_use_std_expected)
     target_compile_features(jose PUBLIC cxx_std_23)
     target_compile_definitions(jose PUBLIC nsel_CONFIG_SELECT_EXPECTED=nsel_EXPECTED_STD)
@@ -115,6 +160,7 @@ if(JOSE_BUILD_TESTS)
 endif()
 
 if(JOSE_FUZZ)
+    enable_testing()
     add_subdirectory(fuzz)
 endif()
 

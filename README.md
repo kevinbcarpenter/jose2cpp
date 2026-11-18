@@ -494,6 +494,35 @@ or use the **vcpkg** option above to get Catch2 3.x. OpenSSL 3 and nlohmann-json
 | `JOSE_BUILD_TESTS`  | `ON`    | Build the Catch2 test suite          |
 | `JOSE_BUILD_BENCH`  | `OFF`   | Build benchmarks                     |
 | `JOSE_BUILD_CLI`    | `OFF`   | Build `jose-cli` (see [Command line](#command-line)) |
-| `JOSE_FUZZ`         | `OFF`   | Build fuzz targets (needs libFuzzer) |
+| `JOSE_FUZZ`         | `OFF`   | Build the fuzz targets (see [Fuzzing](#fuzzing)) |
 | `JOSE_INTEROP_GO`   | `OFF`   | Add live go-jose interop tests to ctest (needs Go; see [tests/interop](tests/interop/README.md)) |
 | `JOSE_USE_STD_EXPECTED` | `AUTO` | `jose::expected` implementation: `AUTO` probes for C++23 `std::expected` and falls back to the vendored [expected-lite](https://github.com/martinmoene/expected-lite) on C++20; `ON`/`OFF` force one. The choice is exported as a public compile definition so consumers always match the library build. |
+
+### Fuzzing
+
+`-DJOSE_FUZZ=ON` builds six fuzz targets in `fuzz/`: base64url, JWK
+parsing, JWS and JWE parsing (then verifying and decrypting with keys of
+every kind), the JWT parsers with the registered claims, and the DEFLATE
+inflater that JWE compression uses. Each one checks invariants as well as
+crashes: a parsed token re-serializes to one that parses the same and
+serializes to exactly the same text again, decoded base64url encodes back to
+the same text, inflated output never goes past its cap. The whole build,
+library included, gets ASan and UBSan (`JOSE_FUZZ_SANITIZERS`), with
+assertions on whatever the build type.
+
+With clang and libFuzzer the targets are real fuzzers. Run one on a scratch
+copy of its corpus so the checked-in seeds stay as they are:
+
+```sh
+cmake -S . -B build-fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DJOSE_FUZZ=ON -DJOSE_BUILD_TESTS=OFF
+cmake --build build-fuzz
+cp -r fuzz/corpus/jws /tmp/jws && build-fuzz/fuzz/fuzz_jws -max_total_time=300 /tmp/jws
+```
+
+Apple's clang and GCC don't ship libFuzzer, so there the targets are built
+to replay the files they're given instead, which is still a regression test
+under the sanitizers. MSVC isn't supported. Either way `ctest` replays the corpus. The seeds come
+from the RFC and go-jose test vectors (`python3 -I fuzz/make_corpus.py`
+writes them), and CI fuzzes every target for a minute whenever it runs (pull
+requests and pushes to `main` and `develop`).
+
