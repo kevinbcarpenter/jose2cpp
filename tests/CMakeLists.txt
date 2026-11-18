@@ -11,6 +11,7 @@ add_executable(jose_tests
     test_jwe.cpp
     test_opaque.cpp
     test_task.cpp
+    test_async.cpp
     test_vectors.cpp
     support/test_support.cpp
 )

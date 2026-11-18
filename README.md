@@ -126,6 +126,16 @@ backend outages as `errc::key_unavailable`, which is passed through; any other
 verifier error becomes `errc::invalid_signature`, and any other decrypter
 error the uniform `errc::decryption_failed`.
 
+For keys behind a network service, `jose/async.hpp` has coroutine versions
+(`async_opaque_signer`, `async_opaque_verifier`, `async_opaque_key_decrypter`)
+used through `jws::sign_async`, `jws::verify_async` and `jwe::decrypt_async`:
+
+```cpp
+auto signed_ = co_await jose::jws::sign_async(payload, {jose::signing_algorithm::ES256,
+                                                       std::make_shared<my_async_kms_signer>()});
+auto plaintext = co_await parsed_jwe->decrypt_async(my_async_kms_decrypter);
+```
+
 ### Coroutines (`jose::task`)
 
 `jose/task.hpp` is a small header-only coroutine type for the I/O-bound

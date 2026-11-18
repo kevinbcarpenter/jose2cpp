@@ -18,6 +18,7 @@
 // (PLAN.md §Legacy Algorithms).
 
 #include "jose/algorithm.hpp"
+#include "jose/async.hpp"
 #include "jose/error.hpp"
 #include "jose/header.hpp"
 #include "jose/jwk.hpp"
@@ -148,6 +149,13 @@ public:
     [[nodiscard]] auto decrypt_multi(opaque_key_decrypter& decrypter, const jwe_decrypt_options& options = {}) const
         -> expected<decrypted>;
 
+    // With an async opaque key decrypter (async.hpp). This jwe and the
+    // decrypter must outlive the returned task; `options` is copied.
+    [[nodiscard]] auto decrypt_async(async_opaque_key_decrypter& decrypter, jwe_decrypt_options options = {}) const
+        -> task<expected<secure_bytes>>;
+    [[nodiscard]] auto decrypt_multi_async(async_opaque_key_decrypter& decrypter,
+                                           jwe_decrypt_options options = {}) const -> task<expected<decrypted>>;
+
     // --- Inspection ---
 
     [[nodiscard]] auto enc() const noexcept -> content_encryption { return enc_; }
@@ -182,6 +190,8 @@ private:
         -> expected<secure_bytes>;
     auto recover_cek(const jwe_recipient_info& r, opaque_key_decrypter& decrypter,
                      const jwe_decrypt_options& options) const -> expected<secure_bytes>;
+    auto recover_cek_async(const jwe_recipient_info& r, async_opaque_key_decrypter& decrypter,
+                           const jwe_decrypt_options& options) const -> task<expected<secure_bytes>>;
     // Decrypts the content with a recovered CEK (and decompresses it).
     auto open(const jwe_recipient_info& r, expected<secure_bytes> cek, const jwe_decrypt_options& options) const
         -> expected<secure_bytes>;

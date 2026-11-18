@@ -16,6 +16,7 @@
 // token ("jwk", "x5c", "jku") are never used for verification implicitly.
 
 #include "jose/algorithm.hpp"
+#include "jose/async.hpp"
 #include "jose/error.hpp"
 #include "jose/header.hpp"
 #include "jose/jwk.hpp"
@@ -34,9 +35,11 @@
 
 namespace jose {
 
-// A signing key: a private asymmetric key or an oct key for HS*, or an
-// opaque signer (HSM, KMS; see opaque.hpp).
-using signing_key = std::variant<jwk, std::shared_ptr<opaque_signer>>;
+// A signing key: a private asymmetric key or an oct key for HS*, an
+// opaque signer (HSM, KMS; opaque.hpp), or an async one (async.hpp, which
+// only jws::sign_async accepts).
+using signing_key =
+    std::variant<jwk, std::shared_ptr<opaque_signer>, std::shared_ptr<async_opaque_signer>>;
 
 // One signature to produce.
 struct jws_signer {
@@ -90,6 +93,16 @@ public:
     static auto sign(std::span<const uint8_t> payload, std::span<const jws_signer> signers,
                      const jws_sign_options& options = {}) -> expected<jws>;
 
+    // As sign(), for signers that include an async_opaque_signer (local and
+    // sync opaque signers work too). Signers run one after another. The
+    // arguments are copied into the task, so temporaries are safe.
+    static auto sign_async(std::vector<uint8_t> payload, std::vector<jws_signer> signers,
+                           jws_sign_options options = {}) -> task<expected<jws>>;
+    static auto sign_async(std::span<const uint8_t> payload, const jws_signer& signer,
+                           const jws_sign_options& options = {}) -> task<expected<jws>>;
+    static auto sign_async(std::string_view payload, const jws_signer& signer,
+                           const jws_sign_options& options = {}) -> task<expected<jws>>;
+
     // --- Parsing ---
     //
     // `algorithms` must not be empty: every signature's "alg" must be in it
@@ -136,6 +149,11 @@ public:
     [[nodiscard]] auto verify(opaque_verifier& verifier) const -> expected<std::vector<uint8_t>>;
     [[nodiscard]] auto verify_multi(opaque_verifier& verifier) const -> expected<verified>;
 
+    // With an async opaque verifier (async.hpp). This jws and the verifier
+    // must outlive the returned task.
+    [[nodiscard]] auto verify_async(async_opaque_verifier& verifier) const -> task<expected<std::vector<uint8_t>>>;
+    [[nodiscard]] auto verify_multi_async(async_opaque_verifier& verifier) const -> task<expected<verified>>;
+
     // --- Inspection ---
 
     [[nodiscard]] auto signatures() const noexcept -> std::span<const jws_signature> { return signatures_; }
@@ -168,6 +186,9 @@ private:
     auto signing_input(const jws_signature& sig) const -> std::vector<uint8_t>;
     auto verify_one(const jws_signature& sig, const jwk& key) const -> expected<void>;
     auto verify_one(const jws_signature& sig, opaque_verifier& verifier) const -> expected<void>;
+    auto verify_one_async(const jws_signature& sig, async_opaque_verifier& verifier) const -> task<expected<void>>;
+    // Starts a JWS over `payload`, before any signature is added.
+    static auto unsigned_jws(std::span<const uint8_t> payload, bool b64) -> jws;
 
     std::vector<jws_signature> signatures_;
     std::vector<uint8_t> payload_;

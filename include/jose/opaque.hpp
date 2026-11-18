@@ -19,8 +19,8 @@
 //   auto payload = parsed->verify(my_opaque_verifier);
 //   auto plaintext = parsed_jwe->decrypt(my_opaque_decrypter);
 //
-// These interfaces are synchronous; async variants for network-bound
-// backends come with jose::task (PLAN.md §8).
+// These interfaces are synchronous; async.hpp has coroutine variants for
+// network-bound backends (cloud KMSs).
 //
 // Errors: return errc::key_unavailable for operational failures (network,
 // permissions, device offline); the library passes those through. Any

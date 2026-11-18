@@ -401,9 +401,9 @@ Wire the crypto primitives into the JOSE object model.
 5. ✅ `jws` — sign, verify; compact, flattened JSON, and general JSON serializations; detached payload; multi-signature (see §JWS)
 6. ✅ `jwe` — encrypt, decrypt; compact, flattened JSON, and general JSON serializations; multi-recipient; DEFLATE compression (see §JWE)
 7. ✅ Unencoded payload option (RFC 7797, `b64` header)
-8. ✅ Opaque signer/verifier/decrypter interfaces — sync variants (see §Opaque Keys); the async variants come with items 9–10
+8. ✅ Opaque signer/verifier/decrypter interfaces — sync variants (see §Opaque Keys); async variants in item 10
 9. ✅ `task<T>` coroutine return type (header-only, zero-dependency; see §task)
-10. Async-aware JWS/JWE overloads that accept `async_opaque_signer` / `async_opaque_key_decrypter`
+10. ✅ Async-aware JWS/JWE overloads that accept `async_opaque_signer` / `async_opaque_key_decrypter` (see §Async Opaque Keys)
 11. Interop tests: generate test vectors with go-jose (Go toolchain in CI), consume in jose2cpp and vice versa; vectors checked into `tests/vectors/`
 
 ### Phase 3: JWT + Polish (Weeks 7-8)
@@ -589,6 +589,16 @@ Implementation notes for Phase 2 item 9 (`include/jose/task.hpp`, header-only, s
 - **`sync_wait(task)`** drives a task from non-coroutine code, blocking on a mutex/condition variable until it finishes on any thread, and returns the value or rethrows. (A mutex rather than `std::binary_semaphore` / `atomic::wait`, which need macOS 11+ in libc++.)
 - **Exceptions** escaping a task body are rethrown by `co_await` / `sync_wait`. With `-fno-exceptions` the header compiles and `unhandled_exception` terminates.
 - **Verified** with Apple Clang 21 (`-O0`, `-O2`, ASan+UBSan, TSan, `-fno-exceptions`) and GCC 16 (`-O0`, `-O2`, ASan+UBSan, `-fno-exceptions`), including resumption from another thread. GCC 10 would need `-fcoroutines`; GCC 11+ enables coroutines with `-std=c++20`.
+
+## Async Opaque Keys
+
+Implementation notes for Phase 2 item 10 (`include/jose/async.hpp`):
+
+- **Interfaces** mirror opaque.hpp with `task<expected<...>>` results: `async_opaque_signer` (`public_key()` is async too, since fetching it from a KMS is a network call), `async_opaque_verifier` (not in the original sketch; added for parity, e.g. KMS-held HMAC keys) and `async_opaque_key_decrypter`. `algorithms()` stays synchronous metadata. The same error and algorithm rules apply.
+- **Named `*_async` entry points**, not overloads returning a different type: `jws::sign_async`, `jws::verify_async` / `verify_multi_async`, `jwe::decrypt_async` / `decrypt_multi_async`. `signing_key` gains a third alternative, `std::shared_ptr<async_opaque_signer>`, so one `sign_async` call mixes local, sync opaque and async signers (run in order). The synchronous `sign` refuses an async signer with a message pointing at `sign_async`.
+- **Lifetimes.** `task` is lazy, so a coroutine's reference parameters can dangle before it runs. `sign_async` therefore takes its payload, signers and options by value (the span / string_view overloads are plain functions that copy before creating the task). The member functions `verify_async` / `decrypt_async` use `*this` and the verifier/decrypter by reference, so those must outlive the task (documented; copying a JWE's ciphertext per call would be the alternative). Spans passed to the interfaces stay valid until their task finishes; implementations that hand work to another thread must copy.
+- **Shared code.** Header construction (`build_signature`), the opaque pre-checks, signature-size check, verifier/decrypter result normalization and content decryption (`jwe::open`) are shared by the sync and async paths, so they can't drift apart.
+- **Tests** use test doubles whose operations really suspend and resume on another thread. The whole suite also passes under ASan+UBSan and TSan.
 
 ## Key Validation
 

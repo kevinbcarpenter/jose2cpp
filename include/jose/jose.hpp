@@ -8,6 +8,7 @@
 //   jose::generate_*_key / random_bytes    (jose/crypto/keygen.hpp)
 
 #include "jose/algorithm.hpp"
+#include "jose/async.hpp"
 #include "jose/base64url.hpp"
 #include "jose/error.hpp"
 #include "jose/header.hpp"
