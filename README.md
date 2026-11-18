@@ -242,6 +242,25 @@ auto signed_ = co_await jose::jws::sign_async(payload, {jose::signing_algorithm:
 auto plaintext = co_await parsed_jwe->decrypt_async(my_async_kms_decrypter);
 ```
 
+JWTs work the same way. The builders have `token_async()` and
+`serialize_async()`, and the parsed tokens have `claims_async()` and, for
+nested JWTs, `decrypt_async()`:
+
+```cpp
+auto token = co_await jose::jwt::signed_token({jose::signing_algorithm::ES256, kms_signer})
+                 .claims(claims)
+                 .serialize_async();
+
+auto parsed = jose::jwt::parse_signed_and_encrypted(*token, key_algs, encs, sig_algs);
+auto inner = co_await parsed->decrypt_async(kms_decrypter);   // still held to sig_algs
+auto verified = co_await inner->claims_async(kms_verifier);
+```
+
+The tasks copy the builder or the parsed token, so either can go away before
+the task runs. Only the verifier or decrypter you pass by reference has to
+outlive it. The sync `serialize()` refuses an async signer and tells you to
+use `serialize_async()`.
+
 ### Coroutines (`jose::task`)
 
 `jose/task.hpp` is a small header-only coroutine type for the I/O-bound

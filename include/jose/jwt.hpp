@@ -54,7 +54,12 @@
 //
 // The claims must be a JSON object, parsed strictly (duplicate member names
 // are rejected, as everywhere in jose2cpp). Checking "exp", "aud" and the
-// rest is a separate step.
+// rest is a separate step (registered_claims::validate).
+//
+// Async opaque keys (async.hpp): the signed and nested builders have
+// token_async() / serialize_async(), and the parsed tokens claims_async()
+// and decrypt_async(). They copy what they need into the task, so only the
+// verifier or decrypter passed by reference must outlive it.
 
 #include "jose/algorithm.hpp"
 #include "jose/error.hpp"
@@ -62,6 +67,7 @@
 #include "jose/jwe.hpp"
 #include "jose/jws.hpp"
 #include "jose/jwt_claims.hpp"
+#include "jose/task.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -117,6 +123,11 @@ public:
 
     [[nodiscard]] auto token() const -> expected<jws>;
     [[nodiscard]] auto serialize() const -> expected<std::string>;
+    // For a signer holding an async_opaque_signer (local and sync opaque
+    // signers work too). The claims, signer and options are copied into the
+    // task, so the builder may be a temporary.
+    [[nodiscard]] auto token_async() const -> task<expected<jws>>;
+    [[nodiscard]] auto serialize_async() const -> task<expected<std::string>>;
 
 private:
     jws_signer signer_;
@@ -181,6 +192,10 @@ public:
     // The outer JWE; its plaintext is the inner compact JWS.
     [[nodiscard]] auto token() const -> expected<jwe>;
     [[nodiscard]] auto serialize() const -> expected<std::string>;
+    // As for signed_builder: the inner JWS is signed asynchronously, then
+    // encrypted. Everything is copied into the task.
+    [[nodiscard]] auto token_async() const -> task<expected<jwe>>;
+    [[nodiscard]] auto serialize_async() const -> task<expected<std::string>>;
 
 private:
     jws_signer signer_;
@@ -220,6 +235,9 @@ public:
     // The header must carry a "kid"; every key in the set with it is tried.
     [[nodiscard]] auto claims(const jwk_set& keys) const -> expected<nlohmann::json>;
     [[nodiscard]] auto claims(opaque_verifier& verifier) const -> expected<nlohmann::json>;
+    // With an async opaque verifier. The token is copied into the task;
+    // the verifier must outlive it.
+    [[nodiscard]] auto claims_async(async_opaque_verifier& verifier) const -> task<expected<nlohmann::json>>;
     // NOT verified: only for choosing a key (by "iss", say) before claims().
     [[nodiscard]] auto unsafe_claims() const -> expected<nlohmann::json>;
 
@@ -243,6 +261,10 @@ public:
         -> expected<nlohmann::json>;
     [[nodiscard]] auto claims(opaque_key_decrypter& decrypter, const jwe_decrypt_options& options = {}) const
         -> expected<nlohmann::json>;
+    // With an async opaque key decrypter. The token and options are copied
+    // into the task; the decrypter must outlive it.
+    [[nodiscard]] auto claims_async(async_opaque_key_decrypter& decrypter, jwe_decrypt_options options = {}) const
+        -> task<expected<nlohmann::json>>;
 
 private:
     friend auto parse_encrypted(std::string_view, const std::vector<key_algorithm>&,
@@ -271,6 +293,12 @@ public:
         -> expected<signed_jwt>;
     [[nodiscard]] auto decrypt(opaque_key_decrypter& decrypter, const jwe_decrypt_options& options = {}) const
         -> expected<signed_jwt>;
+    // With an async opaque key decrypter. The token, the signature
+    // algorithms and `understood` given to parse_signed_and_encrypted() and
+    // the options are copied into the task, so the inner JWS is held to the
+    // same allowlist as decrypt(); the decrypter must outlive the task.
+    [[nodiscard]] auto decrypt_async(async_opaque_key_decrypter& decrypter, jwe_decrypt_options options = {}) const
+        -> task<expected<signed_jwt>>;
 
 private:
     friend auto parse_signed_and_encrypted(std::string_view, const std::vector<key_algorithm>&,

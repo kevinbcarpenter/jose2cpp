@@ -445,3 +445,214 @@ TEST_CASE("RSA1_5 through an async decrypter still needs the opt-in", "[async][j
     CHECK(kms.calls == 0);
     CHECK(must(sync_wait(parsed.decrypt_async(kms, {.legacy = {.allow_rsa1_5 = true}}))).size() == 3);
 }
+
+// ===========================================================================
+// JWT
+// ===========================================================================
+
+namespace {
+
+const nlohmann::json k_claims{{"iss", "https://auth.example.com"}, {"sub", "kevin"}, {"exp", 1900000000}};
+
+} // namespace
+
+TEST_CASE("JWT builders with an async KMS signer", "[async][jwt]") {
+    network net;
+    const auto key = with_kid(must(jwk::generate_ec(ec_curve::P256)), "arn:kms:jwt");
+    const auto pub = must(key.public_key());
+    auto kms = std::make_shared<kms_signer>(net, key, std::vector{signing_algorithm::ES256});
+
+    SECTION("signed; the builder can be a temporary") {
+        auto pending = jwt::signed_token({signing_algorithm::ES256, kms}).claims(k_claims).serialize_async();
+        const auto token = must(sync_wait(std::move(pending)));
+        CHECK(kms->sign_calls == 1);
+        auto parsed = must(jwt::parse_signed(token, {signing_algorithm::ES256}));
+        CHECK(parsed.header().typ() == "JWT");
+        CHECK(parsed.header().kid() == "arn:kms:jwt");
+        CHECK(must(parsed.claims(pub)) == k_claims);
+        CHECK(must(sync_wait(jwt::signed_token({signing_algorithm::ES256, kms}).claims(k_claims).token_async()))
+                  .signatures()
+                  .size() == 1);
+    }
+    SECTION("local and sync opaque signers work through the async builders too") {
+        const auto hmac = must(jwk::generate_oct(32));
+        const auto token =
+            must(sync_wait(jwt::signed_token({signing_algorithm::HS256, hmac}).claims(k_claims).serialize_async()));
+        CHECK(must(must(jwt::parse_signed(token, {signing_algorithm::HS256})).claims(hmac)) == k_claims);
+    }
+    SECTION("the sync builders point at the async ones") {
+        auto r = jwt::signed_token({signing_algorithm::ES256, kms}).claims(k_claims).serialize();
+        REQUIRE_FALSE(r);
+        CHECK(r.error().code == errc::invalid_argument);
+        CHECK_THAT(r.error().message, ContainsSubstring("serialize_async"));
+        const auto kek = must(jwk::generate_oct(32));
+        auto n = jwt::signed_and_encrypted({signing_algorithm::ES256, kms}, content_encryption::A256GCM,
+                                           {key_algorithm::A256KW, kek})
+                     .claims(k_claims)
+                     .serialize();
+        REQUIRE_FALSE(n);
+        CHECK_THAT(n.error().message, ContainsSubstring("serialize_async"));
+        // The builder's own errors come first.
+        auto b64 = jwt::signed_token({signing_algorithm::ES256, kms}, {.b64 = false}).claims(k_claims).serialize();
+        REQUIRE_FALSE(b64);
+        CHECK_THAT(b64.error().message, ContainsSubstring("b64"));
+        CHECK(kms->sign_calls == 0);
+    }
+    SECTION("builder errors come back from the task, without calling the KMS") {
+        auto dup = sync_wait(
+            jwt::signed_token({signing_algorithm::ES256, kms}).claims(k_claims).claims({{"sub", "x"}}).serialize_async());
+        REQUIRE_FALSE(dup);
+        CHECK(dup.error().code == errc::invalid_argument);
+        auto b64 = sync_wait(jwt::signed_token({signing_algorithm::ES256, kms}, {.b64 = false}).claims(k_claims).serialize_async());
+        REQUIRE_FALSE(b64);
+        jwe_encrypt_options cty;
+        REQUIRE(cty.protected_header.set("cty", "text/plain"));
+        auto bad_cty = sync_wait(jwt::signed_and_encrypted({signing_algorithm::ES256, kms}, content_encryption::A256GCM,
+                                                           {key_algorithm::A256KW, must(jwk::generate_oct(32))}, {},
+                                                           cty)
+                                     .claims(k_claims)
+                                     .serialize_async());
+        REQUIRE_FALSE(bad_cty);
+        CHECK(bad_cty.error().code == errc::invalid_argument);
+        CHECK(kms->sign_calls == 0);
+    }
+    SECTION("a failing KMS fails the task") {
+        kms->behaviour = kms_signer::mode::unavailable;
+        auto r = sync_wait(jwt::signed_token({signing_algorithm::ES256, kms}).claims(k_claims).serialize_async());
+        REQUIRE_FALSE(r);
+        CHECK(r.error().code == errc::key_unavailable);
+    }
+    CHECK(ERR_peek_error() == 0);
+}
+
+TEST_CASE("JWT parsing with an async KMS verifier and decrypter", "[async][jwt]") {
+    network net;
+    const auto signing_key = must(jwk::generate_ec(ec_curve::P384));
+    kms_verifier verifier(net, must(signing_key.public_key()), {signing_algorithm::ES384});
+
+    SECTION("signed; the parsed token can go away before the task runs") {
+        const auto token = must(jwt::signed_token({signing_algorithm::ES384, signing_key}).claims(k_claims).serialize());
+        auto pending = [&] {
+            const auto parsed = must(jwt::parse_signed(token, {signing_algorithm::ES384}));
+            return parsed.claims_async(verifier);
+        }();
+        CHECK(must(sync_wait(std::move(pending))) == k_claims);
+        CHECK(verifier.calls == 1);
+
+        verifier.behaviour = kms_verifier::mode::unavailable;
+        auto r = sync_wait(must(jwt::parse_signed(token, {signing_algorithm::ES384})).claims_async(verifier));
+        REQUIRE_FALSE(r);
+        CHECK(r.error().code == errc::key_unavailable);
+
+        kms_verifier other(net, must(signing_key.public_key()), {signing_algorithm::ES256});
+        auto mismatch = sync_wait(must(jwt::parse_signed(token, {signing_algorithm::ES384})).claims_async(other));
+        REQUIRE_FALSE(mismatch);
+        CHECK(mismatch.error().code == errc::algorithm_mismatch);
+        CHECK(other.calls == 0);
+    }
+    SECTION("encrypted-only") {
+        const auto kek = must(jwk::generate_oct(32));
+        kms_decrypter decrypter(net, kek, {key_algorithm::A256KW});
+        const auto token = must(jwt::encrypted_token(content_encryption::A256GCM, {key_algorithm::A256KW, kek})
+                                    .claims(k_claims)
+                                    .serialize());
+        auto pending = [&] {
+            const auto parsed = must(jwt::parse_encrypted(token, {key_algorithm::A256KW}, {content_encryption::A256GCM}));
+            return parsed.claims_async(decrypter);
+        }();
+        CHECK(must(sync_wait(std::move(pending))) == k_claims);
+        CHECK(decrypter.calls == 1);
+
+        // The decrypt options reach the async path: a compressed token over a
+        // tight decompression cap.
+        const auto padded = must(jwt::encrypted_token(content_encryption::A256GCM, {key_algorithm::A256KW, kek},
+                                                      {.compress = true})
+                                     .claims(k_claims)
+                                     .claims({{"pad", std::string(100000, 'a')}})
+                                     .serialize());
+        const auto zipped = must(jwt::parse_encrypted(padded, {key_algorithm::A256KW}, {content_encryption::A256GCM}));
+        auto capped = sync_wait(zipped.claims_async(decrypter, {.max_decompressed_size = 1000}));
+        REQUIRE_FALSE(capped);
+        CHECK(capped.error().code == errc::compression_error);
+        CHECK(must(sync_wait(zipped.claims_async(decrypter, {.max_decompressed_size = 200000}))).contains("pad"));
+    }
+    SECTION("nested, with RSA-OAEP outside; the stored allowlist still applies") {
+        const auto rsa = must(jwk::generate_rsa(2048));
+        kms_decrypter decrypter(net, rsa, {key_algorithm::RSA_OAEP_256});
+        const auto token = must(jwt::signed_and_encrypted({signing_algorithm::ES384, signing_key},
+                                                          content_encryption::A256GCM,
+                                                          {key_algorithm::RSA_OAEP_256, must(rsa.public_key())})
+                                    .claims(k_claims)
+                                    .serialize());
+        auto pending = [&] {
+            const auto parsed = must(jwt::parse_signed_and_encrypted(token, {key_algorithm::RSA_OAEP_256},
+                                                                     {content_encryption::A256GCM},
+                                                                     {signing_algorithm::ES384}));
+            return parsed.decrypt_async(decrypter);
+        }();
+        const auto inner = must(sync_wait(std::move(pending)));
+        CHECK(inner.header().alg() == "ES384");
+        CHECK(must(sync_wait(inner.claims_async(verifier))) == k_claims);
+
+        // Parsed allowing only ES256 inside: decrypt_async refuses the ES384 JWS.
+        const auto narrow = must(jwt::parse_signed_and_encrypted(token, {key_algorithm::RSA_OAEP_256},
+                                                                 {content_encryption::A256GCM},
+                                                                 {signing_algorithm::ES256}));
+        auto refused = sync_wait(narrow.decrypt_async(decrypter));
+        REQUIRE_FALSE(refused);
+        CHECK(refused.error().code == errc::algorithm_mismatch);
+
+        // `understood` reaches the inner JWS too.
+        const auto crit = must(header::from_json({{"crit", {"x-audit"}}, {"x-audit", "42"}}));
+        const auto critical = must(
+            jwt::signed_and_encrypted({.alg = signing_algorithm::ES384, .key = signing_key, .protected_header = crit},
+                                      content_encryption::A256GCM,
+                                      {key_algorithm::RSA_OAEP_256, must(rsa.public_key())})
+                .claims(k_claims)
+                .serialize());
+        const std::vector<key_algorithm> kas{key_algorithm::RSA_OAEP_256};
+        const std::vector<content_encryption> encs{content_encryption::A256GCM};
+        const std::vector<signing_algorithm> sigs{signing_algorithm::ES384};
+        auto unknown = sync_wait(must(jwt::parse_signed_and_encrypted(critical, kas, encs, sigs)).decrypt_async(decrypter));
+        REQUIRE_FALSE(unknown);
+        CHECK(unknown.error().code == errc::unrecognized_critical_extension);
+        auto known = sync_wait(
+            must(jwt::parse_signed_and_encrypted(critical, kas, encs, sigs, {"x-audit"})).decrypt_async(decrypter));
+        CHECK(must(sync_wait(must(std::move(known)).claims_async(verifier))) == k_claims);
+
+        decrypter.behaviour = kms_decrypter::mode::unavailable;
+        auto down = sync_wait(narrow.decrypt_async(decrypter));
+        REQUIRE_FALSE(down);
+        CHECK(down.error().code == errc::key_unavailable);
+    }
+    CHECK(ERR_peek_error() == 0);
+}
+
+TEST_CASE("a nested JWT built and read through KMS keys in one coroutine", "[async][jwt]") {
+    network net;
+    const auto signing_key = with_kid(must(jwk::generate_ec(ec_curve::P256)), "arn:kms:sign");
+    const auto rsa = must(jwk::generate_rsa(2048));
+    auto signer = std::make_shared<kms_signer>(net, signing_key, std::vector{signing_algorithm::ES256});
+    kms_verifier verifier(net, must(signing_key.public_key()), {signing_algorithm::ES256});
+    kms_decrypter decrypter(net, rsa, {key_algorithm::RSA_OAEP_256});
+
+    auto round_trip = [&]() -> task<expected<nlohmann::json>> {
+        auto token = co_await jwt::signed_and_encrypted({signing_algorithm::ES256, signer},
+                                                        content_encryption::A256GCM,
+                                                        {key_algorithm::RSA_OAEP_256, must(rsa.public_key())})
+                         .claims(k_claims)
+                         .serialize_async();
+        if (!token) co_return jose::unexpected(token.error());
+        auto parsed = jwt::parse_signed_and_encrypted(*token, {key_algorithm::RSA_OAEP_256},
+                                                      {content_encryption::A256GCM}, {signing_algorithm::ES256});
+        if (!parsed) co_return jose::unexpected(parsed.error());
+        auto inner = co_await parsed->decrypt_async(decrypter);
+        if (!inner) co_return jose::unexpected(inner.error());
+        co_return co_await inner->claims_async(verifier);
+    };
+    CHECK(must(sync_wait(round_trip())) == k_claims);
+    CHECK(signer->sign_calls == 1);
+    CHECK(decrypter.calls == 1);
+    CHECK(verifier.calls == 1);
+    CHECK(ERR_peek_error() == 0);
+}

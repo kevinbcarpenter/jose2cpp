@@ -6,7 +6,9 @@
 #include <cctype>
 #include <cmath>
 #include <initializer_list>
+#include <memory>
 #include <string_view>
+#include <variant>
 
 namespace jose::jwt {
 
@@ -66,8 +68,15 @@ auto check_nested_cty(const jwe_recipient& recipient, const jwe_encrypt_options&
     return {};
 }
 
+struct signing_job {
+    std::string payload;
+    jws_signer signer;
+};
+
 // Options are checked before claims: they were given first, at construction.
-auto sign_claims(const claim_set& claims, jws_signer signer, const jws_sign_options& options) -> expected<jws> {
+// Shared by the sync and async builders, so they can't drift apart.
+auto prepare_signing(const claim_set& claims, jws_signer signer, const jws_sign_options& options)
+    -> expected<signing_job> {
     if (auto r = require_b64(options); !r) return jose::unexpected(r.error());
     if (claims.error()) return jose::unexpected(*claims.error());
     auto payload = claims.payload();
@@ -77,7 +86,39 @@ auto sign_claims(const claim_set& claims, jws_signer signer, const jws_sign_opti
                              "typ", "JWT");
         !r)
         return jose::unexpected(r.error());
-    return jws::sign(std::string_view(*payload), signer, options);
+    return signing_job{std::move(*payload), std::move(signer)};
+}
+
+auto sign_claims(const claim_set& claims, const jws_signer& signer, const jws_sign_options& options)
+    -> expected<jws> {
+    // After the builder's own checks, so a b64 or claims error isn't hidden
+    // behind "use serialize_async".
+    auto job = prepare_signing(claims, signer, options);
+    if (!job) return jose::unexpected(job.error());
+    if (std::holds_alternative<std::shared_ptr<async_opaque_signer>>(signer.key))
+        return bad_argument("the JWT's signer holds an async_opaque_signer; use token_async() or serialize_async()");
+    return jws::sign(std::string_view(job->payload), job->signer, options);
+}
+
+template <typename T>
+auto failed(jose::error e) -> task<expected<T>> {
+    co_return jose::unexpected(std::move(e));
+}
+
+// A plain function, not a coroutine: everything the task needs is copied
+// into it by jws::sign_async before this returns.
+auto sign_claims_async(const claim_set& claims, const jws_signer& signer, const jws_sign_options& options)
+    -> task<expected<jws>> {
+    auto job = prepare_signing(claims, signer, options);
+    if (!job) return failed<jws>(job.error());
+    return jws::sign_async(std::string_view(job->payload), job->signer, options);
+}
+
+template <typename Token>
+auto compact_of(task<expected<Token>> token) -> task<expected<std::string>> {
+    auto t = co_await std::move(token);
+    if (!t) co_return jose::unexpected(t.error());
+    co_return t->compact();
 }
 
 auto encrypt_payload(std::string_view payload, content_encryption enc, jwe_recipient recipient,
@@ -165,6 +206,14 @@ auto signed_builder::serialize() const -> expected<std::string> {
     return t->compact();
 }
 
+auto signed_builder::token_async() const -> task<expected<jws>> {
+    return sign_claims_async(claims_, signer_, options_);
+}
+
+auto signed_builder::serialize_async() const -> task<expected<std::string>> {
+    return compact_of(token_async());
+}
+
 encrypted_builder::encrypted_builder(content_encryption enc, jwe_recipient recipient, jwe_encrypt_options options)
     : enc_(enc), recipient_(std::move(recipient)), options_(std::move(options)) {}
 
@@ -201,6 +250,30 @@ auto nested_builder::serialize() const -> expected<std::string> {
     auto t = token();
     if (!t) return jose::unexpected(t.error());
     return t->compact();
+}
+
+namespace {
+
+auto encrypt_signed_async(task<expected<jws>> inner, content_encryption enc, jwe_recipient recipient,
+                          jwe_encrypt_options options) -> task<expected<jwe>> {
+    auto signed_ = co_await std::move(inner);
+    if (!signed_) co_return jose::unexpected(signed_.error());
+    auto compact = signed_->compact();
+    if (!compact) co_return jose::unexpected(compact.error());
+    co_return encrypt_payload(*compact, enc, std::move(recipient), std::move(options), true);
+}
+
+} // namespace
+
+auto nested_builder::token_async() const -> task<expected<jwe>> {
+    if (auto r = require_b64(sign_options_); !r) return failed<jwe>(r.error());
+    if (auto r = check_nested_cty(recipient_, encrypt_options_); !r) return failed<jwe>(r.error());
+    return encrypt_signed_async(sign_claims_async(claims_, signer_, sign_options_), enc_, recipient_,
+                                encrypt_options_);
+}
+
+auto nested_builder::serialize_async() const -> task<expected<std::string>> {
+    return compact_of(token_async());
 }
 
 // ===========================================================================
@@ -266,6 +339,24 @@ auto signed_jwt::claims(opaque_verifier& verifier) const -> expected<json> {
     return claims_of(jws_.verify(verifier));
 }
 
+namespace {
+
+// The token is a copy in the coroutine frame, so the caller's may go away.
+auto verify_claims_async(jws token, async_opaque_verifier& verifier) -> task<expected<json>> {
+    co_return claims_of(co_await token.verify_async(verifier));
+}
+
+auto decrypt_claims_async(jwe token, async_opaque_key_decrypter& decrypter, jwe_decrypt_options options)
+    -> task<expected<json>> {
+    co_return claims_of(co_await token.decrypt_async(decrypter, std::move(options)));
+}
+
+} // namespace
+
+auto signed_jwt::claims_async(async_opaque_verifier& verifier) const -> task<expected<json>> {
+    return verify_claims_async(jws_, verifier);
+}
+
 auto signed_jwt::unsafe_claims() const -> expected<json> {
     return parse_claims(jws_.unsafe_payload());
 }
@@ -295,6 +386,11 @@ auto encrypted_jwt::claims(opaque_key_decrypter& decrypter, const jwe_decrypt_op
     return claims_of(jwe_.decrypt(decrypter, options));
 }
 
+auto encrypted_jwt::claims_async(async_opaque_key_decrypter& decrypter, jwe_decrypt_options options) const
+    -> task<expected<json>> {
+    return decrypt_claims_async(jwe_, decrypter, std::move(options));
+}
+
 auto parse_signed_and_encrypted(std::string_view token, const std::vector<key_algorithm>& key_algorithms,
                                 const std::vector<content_encryption>& encryptions,
                                 const std::vector<signing_algorithm>& signature_algorithms,
@@ -309,10 +405,31 @@ auto parse_signed_and_encrypted(std::string_view token, const std::vector<key_al
     return nested_jwt(std::move(*parsed), signature_algorithms, understood);
 }
 
-auto nested_jwt::inner(expected<secure_bytes> plaintext) const -> expected<signed_jwt> {
+namespace {
+
+// The decrypted plaintext of a nested JWT, parsed as its inner JWS.
+auto inner_jws(expected<secure_bytes> plaintext, const std::vector<signing_algorithm>& algorithms,
+               const extension_set& understood) -> expected<signed_jwt> {
     if (!plaintext) return jose::unexpected(plaintext.error());
     const std::string_view text(reinterpret_cast<const char*>(plaintext->data()), plaintext->size());
-    return parse_signed(text, signature_algorithms_, understood_);
+    return parse_signed(text, algorithms, understood);
+}
+
+auto decrypt_nested_async(jwe token, std::vector<signing_algorithm> algorithms, extension_set understood,
+                          async_opaque_key_decrypter& decrypter, jwe_decrypt_options options)
+    -> task<expected<signed_jwt>> {
+    co_return inner_jws(co_await token.decrypt_async(decrypter, std::move(options)), algorithms, understood);
+}
+
+} // namespace
+
+auto nested_jwt::inner(expected<secure_bytes> plaintext) const -> expected<signed_jwt> {
+    return inner_jws(std::move(plaintext), signature_algorithms_, understood_);
+}
+
+auto nested_jwt::decrypt_async(async_opaque_key_decrypter& decrypter, jwe_decrypt_options options) const
+    -> task<expected<signed_jwt>> {
+    return decrypt_nested_async(jwe_, signature_algorithms_, understood_, decrypter, std::move(options));
 }
 
 auto nested_jwt::decrypt(const jwk& key, const jwe_decrypt_options& options) const -> expected<signed_jwt> {
