@@ -411,12 +411,12 @@ Wire the crypto primitives into the JOSE object model.
 High-level JWT API and production readiness.
 
 **Deliverables:**
-1. `jwt` builder — signed, encrypted, signed-then-encrypted (nested)
+1. ✅ `jwt` builder — signed, encrypted, signed-then-encrypted (nested) (see §JWT)
 2. `jwt` parser — mandatory algorithm allowlists
 3. Standard claims struct with `NumericDate` (chrono-based)
 4. `Audience` type (single string or array, flexible parse)
 5. Claim validation with leeway
-6. Signed-then-encrypted JWT (`cty: "JWT"` handling)
+6. Signed-then-encrypted JWT (`cty: "JWT"` handling) on the parse side; building nested tokens is item 1
 7. Optional async JWKS URL fetcher with pluggable HTTP backend, caching, TTL refresh
 8. CLI tool (`jose-cli`) — sign, verify, encrypt, decrypt, generate-key
 9. Fuzz targets (libFuzzer): `jwk::from_json`, `jws::parse`, `jwe::parse`, `jwt::parse_signed` (see §Fuzz Testing)
@@ -612,6 +612,16 @@ Implementation notes for Phase 2 item 11 (details and the vector format in `test
   - *Stray top-level `encrypted_key`*: go-jose's general JWE JSON repeats the first recipient's `encrypted_key` at the top level. jose2cpp used to reject that as mixed general/flattened, so it couldn't read any multi-recipient go-jose JWE. It now ignores exactly that copy (it isn't authenticated and nothing reads it); any other mix is still rejected.
   - *Compact JWE with AAD*: go-jose's `CompactSerialize` silently drops `aad`, yielding an undecryptable token; jose2cpp's `compact()` refuses.
 - **CI**: `.github/workflows/ci.yml` builds and tests on Ubuntu 24.04 with Go installed and `JOSE_INTEROP_GO=ON`.
+
+## JWT
+
+Implementation notes for Phase 3 (`include/jose/jwt.hpp`, namespace `jose::jwt`).
+
+- **Builders** (item 1): `jwt::signed_token(signer)`, `jwt::encrypted_token(enc, recipient)` and `jwt::signed_and_encrypted(signer, enc, recipient)`, like go-jose's `jwt.Signed` / `Encrypted` / `SignedAndEncrypted`. `claims()` takes a `nlohmann::json` object or anything nlohmann can serialize to one (a struct with `to_json`), and can be called repeatedly; `token()` returns the `jws` / `jwe`, `serialize()` the compact form. The first error in a chain is kept and reported at the end, so a chain needs one check.
+- **Claim names given twice are an error.** go-jose merges claim sets and keeps the last value, which lets a private-claims struct silently replace `exp` or `sub`; jose2cpp refuses instead. Also errors (`errc::serialization_error`), anywhere in the claim tree: strings that aren't valid UTF-8, NaN and infinity (nlohmann would write `null`, turning an overflowed `exp` into a token that never expires; go-jose's `json.Marshal` fails too), discarded values (nlohmann writes `<discarded>`, which isn't JSON) and binary values. Claims that aren't a JSON object are `errc::invalid_argument`.
+- **Error order.** An error in the builder's options (`b64=false`, a nested token's conflicting `cty`) is reported before a claims error, since the options were given first.
+- **Lifetimes.** `claims()` on a temporary builder returns the builder by value, so `auto& b = jwt::signed_token(s).claims(c);` doesn't compile instead of dangling.
+- **Headers.** `"typ":"JWT"` is set on every token unless the caller sets `typ` in any header part. go-jose leaves `typ` to the caller. RFC 7519 §5.1 recommends "JWT" for generic tokens; RFC 8725 §3.11 recommends an application-specific type (e.g. `at+jwt`) where one exists, which the caller can still set. A nested token's JWE gets `"cty":"JWT"` (RFC 7519 §5.2); go-jose makes the caller set it and fails otherwise, jose2cpp sets it and refuses a different value. JWTs are compact with a base64url payload, so `b64=false` is refused.
 
 ## Key Validation
 

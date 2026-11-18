@@ -1,12 +1,13 @@
 # jose2cpp
 
-C++ variation of the Go Jose library.
-
-A modern C++20 JOSE (JSON Object Signing and Encryption) library.
+A C++20 take on the Go JOSE library. jose2cpp does JSON Object Signing and
+Encryption (JWS, JWE, JWK, and JWT building, with parsing next) on top of OpenSSL 3,
+and it follows go-jose v4's rules: parsing always takes the algorithms you
+accept, and a key embedded in a token is never trusted on its own.
 
 ## Quick start
 
-Include the umbrella header and use the unified entry points — `sign`/`verify`
+Include the umbrella header and use the unified entry points: `sign`/`verify`
 for all 13 JWS algorithms and `encrypt`/`decrypt` for all 6 JWE content
 encryption algorithms. Every fallible call returns `jose::expected<T>`
 (no exceptions); key material lives in `jose::secure_bytes`, which zeroes
@@ -99,6 +100,31 @@ auto parsed = jose::jwe::parse(*token, {jose::key_algorithm::ECDH_ES_A256KW},
                                {jose::content_encryption::A256GCM});
 auto opened = parsed->decrypt(key);    // expected<secure_bytes>
 ```
+
+### Tokens (JWT)
+
+`jose::jwt` builds signed, encrypted and nested (signed then encrypted) JWTs.
+Claims can be a JSON object or your own struct with a `to_json`, and you can
+call `claims()` as many times as you like. Giving the same claim name twice is
+an error, because silently letting one claim set overwrite another's `exp` is
+exactly the kind of bug you don't want in a token.
+
+```cpp
+auto token = jose::jwt::signed_token({jose::signing_algorithm::ES256, key})
+                 .claims({{"iss", "https://auth.example.com"}, {"sub", "kevin"}})
+                 .claims(my_private_claims)
+                 .serialize();                    // compact JWS, "typ":"JWT"
+
+auto sealed = jose::jwt::signed_and_encrypted(
+                  {jose::signing_algorithm::EdDSA, signing_key},
+                  jose::content_encryption::A256GCM,
+                  {jose::key_algorithm::ECDH_ES_A256KW, their_public_key})
+                  .claims(claims)
+                  .serialize();                   // JWE with "cty":"JWT" around the JWS
+```
+
+Any error along the chain comes back from `serialize()` (or `token()`, which
+gives you the `jws` / `jwe` itself), so one check covers the whole thing.
 
 ### HSMs and key services (opaque keys)
 
@@ -204,7 +230,7 @@ There are two supported ways to get the dependencies. Use **vcpkg** for reproduc
 pinned versions across machines and CI (recommended for anything beyond local dev);
 use **system packages** for the quickest local setup.
 
-### Option A — vcpkg (cross-platform, recommended)
+### Option A: vcpkg (cross-platform, recommended)
 
 Works identically on macOS and Ubuntu and pins the exact versions from
 [vcpkg.json](vcpkg.json), so you avoid distro version skew (notably Catch2 on Ubuntu 22.04).
@@ -228,7 +254,7 @@ Works identically on macOS and Ubuntu and pins the exact versions from
    ctest --preset vcpkg
    ```
 
-### Option B — system packages
+### Option B: system packages
 
 **macOS (Homebrew):**
 ```sh

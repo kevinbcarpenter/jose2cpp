@@ -13,6 +13,7 @@ add_executable(jose_tests
     test_task.cpp
     test_async.cpp
     test_interop.cpp
+    test_jwt.cpp
     test_vectors.cpp
     support/test_support.cpp
 )
