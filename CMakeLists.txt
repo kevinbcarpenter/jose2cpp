@@ -9,6 +9,7 @@ option(JOSE_BUILD_TESTS "Build tests" ON)
 option(JOSE_BUILD_BENCH "Build benchmarks" OFF)
 option(JOSE_BUILD_CLI "Build CLI tool" OFF)
 option(JOSE_FUZZ "Build fuzz targets (requires libFuzzer)" OFF)
+option(JOSE_INTEROP_GO "Add live go-jose interop tests to ctest (requires Go and network access to fetch go-jose)" OFF)
 set(JOSE_USE_STD_EXPECTED AUTO CACHE STRING
     "Use std::expected (requires C++23): AUTO, ON, or OFF (OFF = vendored expected-lite on C++20)")
 set_property(CACHE JOSE_USE_STD_EXPECTED PROPERTY STRINGS AUTO ON OFF)
@@ -42,6 +43,7 @@ endif()
 
 find_package(OpenSSL 3.0 REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(ZLIB REQUIRED) # raw DEFLATE for JWE "zip":"DEF" (RFC 7516 §4.1.3)
 
 # Version header: project(VERSION) above is the single source of truth.
 # (Keep vcpkg.json's "version" field in sync when tagging a release.)
@@ -56,6 +58,11 @@ add_library(jose
     src/algorithm.cpp
     src/secure_bytes.cpp
     src/jwk.cpp
+    src/header.cpp
+    src/jws.cpp
+    src/jwe.cpp
+    src/internal/deflate.cpp
+    src/internal/codec.cpp
     src/crypto/hmac.cpp
     src/crypto/rsa.cpp
     src/crypto/ec.cpp
@@ -76,14 +83,17 @@ target_include_directories(jose
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-# Only libcrypto is used (no TLS); nlohmann_json is used by the upcoming
-# JWK/JWS/JWE layers.
+# Only libcrypto is used (no TLS). zlib is an implementation detail.
 target_link_libraries(jose
     PUBLIC
         OpenSSL::Crypto
         nlohmann_json::nlohmann_json
+    PRIVATE
+        ZLIB::ZLIB
 )
 
 if(_jose_use_std_expected)
@@ -124,7 +134,7 @@ install(EXPORT joseTargets
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/jose
 )
 
-# Config file pulls in OpenSSL/nlohmann_json via find_dependency so that
+# Config file pulls in OpenSSL/nlohmann_json/ZLIB via find_dependency so that
 # find_package(jose) works on a clean machine.
 configure_package_config_file(
     cmake/joseConfig.cmake.in

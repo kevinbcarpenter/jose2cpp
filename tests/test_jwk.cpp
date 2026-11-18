@@ -18,6 +18,7 @@ using namespace jose;
 using json = nlohmann::json;
 using jose::test::b64;
 using jose::test::load_vectors;
+using jose::test::self_signed_pem;
 
 namespace {
 
@@ -61,27 +62,6 @@ auto to_pem(EVP_PKEY* key, bool priv) -> std::string {
     std::unique_ptr<BIO, decltype(&BIO_free)> bio{BIO_new(BIO_s_mem()), BIO_free};
     REQUIRE((priv ? PEM_write_bio_PrivateKey(bio.get(), key, nullptr, nullptr, 0, nullptr, nullptr)
                   : PEM_write_bio_PUBKEY(bio.get(), key)) == 1);
-    char* data = nullptr;
-    const long len = BIO_get_mem_data(bio.get(), &data);
-    return {data, static_cast<size_t>(len)};
-}
-
-auto self_signed_pem(EVP_PKEY* key, const char* cn) -> std::string {
-    std::unique_ptr<X509, decltype(&X509_free)> cert{X509_new(), X509_free};
-    REQUIRE(cert);
-    X509_set_version(cert.get(), 2);
-    ASN1_INTEGER_set(X509_get_serialNumber(cert.get()), 1);
-    X509_gmtime_adj(X509_getm_notBefore(cert.get()), 0);
-    X509_gmtime_adj(X509_getm_notAfter(cert.get()), 3600);
-    REQUIRE(X509_set_pubkey(cert.get(), key) == 1);
-    X509_NAME* name = X509_get_subject_name(cert.get());
-    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
-                               reinterpret_cast<const unsigned char*>(cn), -1, -1, 0);
-    X509_set_issuer_name(cert.get(), name);
-    REQUIRE(X509_sign(cert.get(), key, EVP_sha256()) > 0);
-
-    std::unique_ptr<BIO, decltype(&BIO_free)> bio{BIO_new(BIO_s_mem()), BIO_free};
-    REQUIRE(PEM_write_bio_X509(bio.get(), cert.get()) == 1);
     char* data = nullptr;
     const long len = BIO_get_mem_data(bio.get(), &data);
     return {data, static_cast<size_t>(len)};

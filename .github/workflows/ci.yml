@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu:
+    name: Ubuntu 24.04 (GCC, system packages, go-jose interop)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            nlohmann-json3-dev libssl-dev zlib1g-dev catch2 cmake ninja-build g++
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: tests/interop/go/go.mod
+          cache-dependency-path: tests/interop/go/go.sum
+
+      - name: Configure
+        run: cmake --preset system -DJOSE_INTEROP_GO=ON
+
+      - name: Build
+        run: cmake --build --preset system
+
+      - name: Test
+        run: ctest --preset system --output-on-failure

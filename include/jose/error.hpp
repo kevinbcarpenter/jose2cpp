@@ -35,6 +35,9 @@ enum class errc {
     invalid_iv,
     compression_error,
     invalid_argument,
+    // An opaque key's backend (HSM, KMS, ...) couldn't perform the
+    // operation: network, permissions, device offline. See opaque.hpp.
+    key_unavailable,
 };
 
 struct error {

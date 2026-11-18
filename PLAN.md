@@ -2,7 +2,7 @@
 
 ## Project Goal
 
-A modern C++20 library implementing the JOSE (JSON Object Signing and Encryption) standards at feature parity with go-jose v4. Dependencies: OpenSSL 3.x (crypto), nlohmann/json (serialization), Catch2 (tests).
+A modern C++20 library implementing the JOSE (JSON Object Signing and Encryption) standards at feature parity with go-jose v4. Dependencies: OpenSSL 3.x (crypto), nlohmann/json (serialization), zlib (JWE DEFLATE, private), Catch2 (tests).
 
 ## RFC Coverage
 
@@ -37,7 +37,8 @@ jose2cpp/
 │       ├── jwe.hpp               # JWE encrypt/decrypt/parse
 │       ├── jwt.hpp               # JWT builder/parser/validator
 │       ├── header.hpp            # JOSE header types
-│       ├── async.hpp             # task<T>, async opaque interfaces
+│       ├── task.hpp              # task<T>, sync_wait (header-only)
+│       ├── async.hpp             # async opaque interfaces
 │       └── crypto/
 │           ├── signing.hpp          # unified sign/verify (all JWS algs)
 │           ├── encryption.hpp       # unified encrypt/decrypt (all JWE enc algs)
@@ -396,14 +397,14 @@ Wire the crypto primitives into the JOSE object model.
 1. ✅ `jwk` — parse/serialize all key types (RSA, EC, OKP, oct), X.509 chain, thumbprint
 2. ✅ `jwk` key validation on import (see §Key Validation)
 3. ✅ `jwk_set` — parse/serialize, kid lookup
-4. JOSE header parsing with `crit` extension allowlist (see §Critical Header Extensions)
-5. `jws` — sign, verify; compact, flattened JSON, and general JSON serializations; detached payload; multi-signature
-6. `jwe` — encrypt, decrypt; compact, flattened JSON, and general JSON serializations; multi-recipient; DEFLATE compression
-7. Unencoded payload option (RFC 7797, `b64` header)
-8. Opaque signer/verifier/decrypter interfaces — both sync and async variants
-9. `task<T>` coroutine return type (header-only, zero-dependency)
-10. Async-aware JWS/JWE overloads that accept `async_opaque_signer` / `async_opaque_key_decrypter`
-11. Interop tests: generate test vectors with go-jose (Go toolchain in CI), consume in jose2cpp and vice versa; vectors checked into `tests/vectors/`
+4. ✅ JOSE header parsing with `crit` extension allowlist (see §Critical Header Extensions)
+5. ✅ `jws` — sign, verify; compact, flattened JSON, and general JSON serializations; detached payload; multi-signature (see §JWS)
+6. ✅ `jwe` — encrypt, decrypt; compact, flattened JSON, and general JSON serializations; multi-recipient; DEFLATE compression (see §JWE)
+7. ✅ Unencoded payload option (RFC 7797, `b64` header)
+8. ✅ Opaque signer/verifier/decrypter interfaces — sync variants (see §Opaque Keys); async variants in item 10
+9. ✅ `task<T>` coroutine return type (header-only, zero-dependency; see §task)
+10. ✅ Async-aware JWS/JWE overloads that accept `async_opaque_signer` / `async_opaque_key_decrypter` (see §Async Opaque Keys)
+11. ✅ Interop tests: generate test vectors with go-jose (Go toolchain in CI), consume in jose2cpp and vice versa; vectors checked into `tests/vectors/` (see §go-jose Interop)
 
 ### Phase 3: JWT + Polish (Weeks 7-8)
 
@@ -445,6 +446,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(OpenSSL 3.0 REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(ZLIB REQUIRED)
 find_package(Catch2 3 REQUIRED)
 
 add_library(jose
@@ -522,7 +524,94 @@ auto result = jws::parse(token, {signing_algorithm::RS256}, known);
 
 The library handles all standard registered headers internally. The allowlist is only for application-defined extensions. Default (empty set) means any `crit` extension causes rejection — safe by default.
 
+Implementation (Phase 2, `jose/header.hpp`):
+
+- **`jose::header`** is one header JSON object (protected, shared unprotected, or per-signature/recipient). Built by `header::parse` / `from_json` / `from_base64url`; every registered parameter present is type-checked up front, so the typed accessors (`alg()`, `kid()`, `epk()`, `p2c()`, `crit()`, `b64()`, ...) never fail. Unregistered parameters are kept verbatim and read with `get(name)`. `set()` re-validates and leaves the header unchanged on failure.
+- **Duplicate member names are rejected** (`errc::serialization_error`) in any object, nested ones included. RFC 7515 §4 / 7516 §4 / 7517 §4 allow either rejecting or keeping the last value; rejecting removes any chance of two parsers disagreeing about which `alg` a token has. `jwk::from_json` and `jwk_set::from_json` use the same strict parser.
+- **Registered parameter checks**: strings for `alg enc zip kid typ cty jku x5u`; base64url for `apu apv iv tag p2s x5t x5t#S256` (`x5t` 20 octets, `x5t#S256` 32); `jwk`/`epk` must be valid *public* asymmetric JWKs; `x5c` must be DER certificates, with `x5t`/`x5t#S256` matching the leaf; `p2c` a positive integer (the PBES2 code enforces its own upper bound); `b64` a boolean.
+- **`crit` structure** (RFC 7515 §4.1.11): a non-empty array of unique, non-empty strings, none of which is a parameter defined by RFC 7515/7516/7518 (`is_registered_header_parameter`). `b64` is not "registered" in that sense — RFC 7797 requires it to be listed.
+- **`join_headers(ctx, protected, shared, per_recipient, understood)`** combines the parts for one signature/recipient (RFC 7515 §7.2.1, RFC 7516 §7.2.1) and enforces the cross-part rules, all `errc::invalid_header` except the last:
+  - parameter names must be disjoint across parts;
+  - `crit` must be protected; for JWS so must `b64` (RFC 7797 §3), for JWE `zip` (RFC 7516 §4.1.3);
+  - `alg` is required, and `enc` for JWE;
+  - JWS `b64` must be listed in `crit` (RFC 7797 §6);
+  - each name in `crit` must be present **in the protected header** — stricter than RFC 7515 requires, but a critical value the attacker could change or strip isn't worth honouring;
+  - each name in `crit` must be understood — by the library (`b64`, JWS only) or via the caller's `extension_set` — else `errc::unrecognized_critical_extension`.
+
 ---
+
+## JWS
+
+Implementation (Phase 2, `jose/jws.hpp`), following go-jose v4:
+
+- **Parsing needs an algorithm allowlist.** `jws::parse(input, algorithms, understood)` auto-detects compact vs JSON; `parse_compact`, `parse_json` and `parse_detached` are explicit. Every signature's `alg` must be in the (non-empty) list, so a token can't choose its own algorithm; `none` and unknown values are `errc::unsupported_algorithm`. Headers go through `join_headers` (so `crit`, disjointness and `b64` rules apply), and the JSON is parsed strictly (duplicate members rejected).
+- **Verification** checks the key before using it: `jwk::check_algorithm` (type, curve, HMAC length, the key's own `alg`) and `jwk::check_operation("verify")` (`use` / `key_ops`). `verify(jwk)` needs exactly one signature, `verify(jwk_set)` selects candidates by the header `kid` (required) and tries each, `verify_multi(jwk)` returns the index of the first signature the key verifies. Keys embedded in the token (`jwk`, `x5c`, `jku`) are never used implicitly.
+- **Signing** takes `jws_signer`s (alg, private jwk or oct key, optional protected/unprotected headers) and `jws_sign_options` (`b64`, `embed_jwk`, `include_kid`, default on). The protected header is serialized with nlohmann's sorted keys and no whitespace.
+- **Signing input is built from the parts as transmitted** (protected header and payload strings), never from re-encoded values, so a parsed JWS re-serializes byte-for-byte.
+- **RFC 7797**: with `b64=false` the payload is raw in the signing input; `b64` must be protected, listed in `crit`, and identical across signatures. `compact()` refuses a payload containing `.` (use `compact_detached()`); JSON output requires the payload to be valid UTF-8.
+- **Vectors**: `tests/vectors/jws.json` holds 17 cases / 31 serializations (RFC 7515 App. A.1–A.4, A.6, A.7; RFC 7520 §4.1–4.8 incl. detached, unprotected-only and multi-signature; RFC 7797 §4.1–4.2; RFC 8037 A.4). Each is parsed, verified, tampered, and re-serialized exactly; deterministic ones are re-signed and match byte-for-byte when the header encoding coincides.
+
+---
+
+## JWE
+
+Implementation (Phase 2, `jose/jwe.hpp`), following go-jose v4:
+
+- **Parsing needs two allowlists**: key-management algorithms and content encryptions. Every recipient's `alg` and the (common) `enc` must be in them; `zip` may only be `DEF`. Headers go through `join_headers` (`zip` protected, parts disjoint, `crit` allowlist). The IV and tag lengths must match `enc` (`errc::invalid_iv` / `invalid_tag`), and `dir` / `ECDH-ES` recipients must have an empty encrypted key (RFC 7516 §5.2 step 10).
+- **Decryption** checks the key first — `jwk::check_algorithm` (for `dir`, against `enc`, since RFC 7520 labels CEKs with their `enc` value), `jwk::check_operation` (`unwrapKey`, `deriveKey` for ECDH-ES, `decrypt` for `dir`), a private key for RSA/ECDH, and an `epk` on the key's curve. Those are reported as key errors. **Every cryptographic failure** (key unwrap, ECDH, wrong CEK length, tag) is the same `errc::decryption_failed` with the same message, so failures can't be told apart; with RSA1_5 the constant-time random-CEK countermeasure makes padding failures surface as tag failures too.
+- `decrypt(jwk)` needs one recipient, `decrypt(jwk_set)` selects by `kid`, `decrypt_multi(jwk)` tries each recipient the key suits and returns its index. Plaintext is returned as `secure_bytes`.
+- **PBES2 on decrypt**: `p2c` must be in [1000, 1 000 000] and `p2s` at least 8 octets (`errc::invalid_header`), bounding attacker-chosen work.
+- **DEFLATE** (`zip:"DEF"`, raw RFC 1951 via zlib, a private dependency) is applied after decryption, so a malformed stream isn't an oracle. Output is capped at max(250 KiB, 10 × ciphertext) by default (go-jose v4's bound), configurable via `jwe_decrypt_options::max_decompressed_size`.
+- **Encryption** takes `jwe_recipient`s (alg, key, extra parameters such as `apu`/`apv`, PBES2 count) and `jwe_encrypt_options` (shared protected / unprotected headers, JSON `aad`, `compress`, `include_kid`, `legacy`). With one recipient, its parameters (`alg`, `kid`, `epk`, `iv`/`tag`, `p2s`/`p2c`) go in the protected header so the compact form works; with several they go in per-recipient headers. `dir` and `ECDH-ES` fix the CEK and are single-recipient only. Library-owned parameters (`alg enc zip epk iv tag p2s p2c`) can't be supplied by the caller.
+- **AAD is built from the transmitted strings** (protected header, `aad`), so a parsed JWE re-serializes byte-for-byte.
+- **Vectors**: `tests/vectors/jwe.json` — 18 cases / 37 serializations (RFC 7520 §5.1–5.13: RSA1_5, RSA-OAEP, PBES2, ECDH-ES(+KW), dir, AES-GCM-KW, AES-KW, compression, AAD, shared unprotected headers, multiple recipients; RFC 7516 App. A.1–A.5). Each is parsed, decrypted with every recipient's key, re-serialized exactly, and tampered. RFC 7520 §5.5/§5.6 label a JSON object without `recipients` "general"; it is parsed (correctly) as flattened.
+
+---
+
+## Opaque Keys
+
+Implementation notes for Phase 2 item 8 (`include/jose/opaque.hpp`), following go-jose v4's `OpaqueSigner` / `OpaqueVerifier` / `OpaqueKeyDecrypter`:
+
+- **Three interfaces.** `opaque_signer` (`public_key()`, `algorithms()`, `sign(signing_input, alg)`), `opaque_verifier` (`algorithms()`, `verify(signing_input, signature, alg)`), `opaque_key_decrypter` (`algorithms()`, `decrypt_key(encrypted_key, alg, enc, joined_header)`). Every interface states its algorithms, and the library never passes it anything else (`errc::algorithm_mismatch`); `verify_multi` / `decrypt_multi` skip signatures and recipients it can't handle. The decrypter gets the recipient's full joined header because ECDH-ES needs `epk`/`apu`/`apv`, AES-GCM-KW `iv`/`tag`, and PBES2 `p2s`/`p2c` (go-jose passes the header too).
+- **Plugging in.** `jws_signer::key` is a `signing_key = std::variant<jwk, std::shared_ptr<opaque_signer>>`, so opaque and local signers mix in one multi-signature JWS. Verifiers and decrypters are passed by reference to `jws::verify` / `verify_multi` and `jwe::decrypt` / `decrypt_multi`. `public_key()` is called only when `include_kid` or `embed_jwk` needs it.
+- **Errors.** A new `errc::key_unavailable` reports backend failures (network, permissions, device offline) and is passed through unchanged. Any other verifier error becomes `errc::invalid_signature`; any other decrypter error, and a CEK of the wrong length, becomes the uniform `errc::decryption_failed` (go-jose maps everything to `ErrCryptoFailure`; passing outages through keeps them debuggable without opening an oracle on the token's contents). Signer errors pass through: signing input isn't attacker-controlled.
+- **Signature-size check.** An `ES*` signature from an opaque signer must be exactly R || S (64/96/132 octets); a DER signature, which most HSMs and KMSs return, is caught with a message saying so.
+- **RSA1_5** still needs `legacy_options::allow_rsa1_5`, checked before the decrypter is called. The constant-time countermeasure can't be applied inside someone else's code, so the interface documents that the decrypter must not reveal padding failures.
+- **No opaque key encrypter.** Encryption uses public keys (or a CEK/KEK the caller already holds), so there is no KMS case for it yet; go-jose's `OpaqueKeyEncrypter` can't be implemented outside its package either.
+
+## task
+
+Implementation notes for Phase 2 item 9 (`include/jose/task.hpp`, header-only, standard library only):
+
+- **`task<T>`** is lazy (the body runs when first awaited), move-only and single-consumer (`co_await` moves the result out). `T` may be `void` or any non-reference object type, including ones without a default constructor such as `expected<jwk>`; results live in a union. Discarding an unawaited task destroys its frame without running it.
+- **No scheduler.** A task runs on the thread that awaits it, and the awaiter resumes on whichever thread the task finishes on. Executors, thread pools and cancellation belong to the application's async framework; `task` only has to compose with it, and any awaitable can be `co_await`ed inside one.
+- **Constant stack for loops without symmetric transfer.** Symmetric transfer relies on the compiler emitting a tail call, which GCC doesn't do at `-O0` or under ASan: a loop of a million synchronous `co_await`s overflowed the stack there. Instead the awaiter resumes the task directly and an atomic flag (set by both sides at the hand-off; acq_rel) decides who continues, as in pre-symmetric-transfer cppcoro: a task that completed synchronously returns into `await_suspend`, which declines to suspend. Cost: one atomic exchange per `co_await`. Recursion through `co_await` uses stack like ordinary recursion.
+- **`sync_wait(task)`** drives a task from non-coroutine code, blocking on a mutex/condition variable until it finishes on any thread, and returns the value or rethrows. (A mutex rather than `std::binary_semaphore` / `atomic::wait`, which need macOS 11+ in libc++.)
+- **Exceptions** escaping a task body are rethrown by `co_await` / `sync_wait`. With `-fno-exceptions` the header compiles and `unhandled_exception` terminates.
+- **Verified** with Apple Clang 21 (`-O0`, `-O2`, ASan+UBSan, TSan, `-fno-exceptions`) and GCC 16 (`-O0`, `-O2`, ASan+UBSan, `-fno-exceptions`), including resumption from another thread. GCC 10 would need `-fcoroutines`; GCC 11+ enables coroutines with `-std=c++20`.
+
+## Async Opaque Keys
+
+Implementation notes for Phase 2 item 10 (`include/jose/async.hpp`):
+
+- **Interfaces** mirror opaque.hpp with `task<expected<...>>` results: `async_opaque_signer` (`public_key()` is async too, since fetching it from a KMS is a network call), `async_opaque_verifier` (not in the original sketch; added for parity, e.g. KMS-held HMAC keys) and `async_opaque_key_decrypter`. `algorithms()` stays synchronous metadata. The same error and algorithm rules apply.
+- **Named `*_async` entry points**, not overloads returning a different type: `jws::sign_async`, `jws::verify_async` / `verify_multi_async`, `jwe::decrypt_async` / `decrypt_multi_async`. `signing_key` gains a third alternative, `std::shared_ptr<async_opaque_signer>`, so one `sign_async` call mixes local, sync opaque and async signers (run in order). The synchronous `sign` refuses an async signer with a message pointing at `sign_async`.
+- **Lifetimes.** `task` is lazy, so a coroutine's reference parameters can dangle before it runs. `sign_async` therefore takes its payload, signers and options by value (the span / string_view overloads are plain functions that copy before creating the task). The member functions `verify_async` / `decrypt_async` use `*this` and the verifier/decrypter by reference, so those must outlive the task (documented; copying a JWE's ciphertext per call would be the alternative). Spans passed to the interfaces stay valid until their task finishes; implementations that hand work to another thread must copy.
+- **Shared code.** Header construction (`build_signature`), the opaque pre-checks, signature-size check, verifier/decrypter result normalization and content decryption (`jwe::open`) are shared by the sync and async paths, so they can't drift apart.
+- **Tests** use test doubles whose operations really suspend and resume on another thread. The whole suite also passes under ASan+UBSan and TSan.
+
+## go-jose Interop
+
+Implementation notes for Phase 2 item 11 (details and the vector format in `tests/interop/README.md`):
+
+- **Harness.** `tests/interop/go` (go-jose v4.1.9, pinned by `go.mod`/`go.sum`) generates and verifies; `jose_interop_gen` generates the jose2cpp side; `test_interop.cpp` verifies. Both directions cover all 13 JWS algorithms and 17 key-management × 6 content encryptions, compact and JSON, plus ECDH-ES on P-384/P-521, DEFLATE, PBES2 at each producer's default count, JSON `aad`, multi-signature and five-recipient JWE: 14 JWS + 112 JWE vectors each way. jose2cpp also re-serializes go-jose's tokens (compact byte-for-byte, JSON by value). Ed448 and X25519/X448 ECDH aren't covered: go-jose lacks them.
+- **Checked-in vectors** (`tests/vectors/interop/`) run in the normal suite with no Go needed. `-DJOSE_INTEROP_GO=ON` adds ctest fixtures that generate fresh vectors on both sides and cross-check them, and an `interop_vectors` target that refreshes the checked-in files.
+- **Known incompatibilities are tested, not skipped.** A `jws_incompatible` list holds vectors the other library must reject; if one starts being accepted, the test fails so it can be moved.
+- **Findings:**
+  - *RFC 7797 `b64=false`*: go-jose base64url-encodes the payload in the serialized token (and decodes it on parse) while signing it raw, contrary to RFC 7797 §3/§5. jose2cpp keeps the RFC behaviour (its §4 vectors pass); the two can't exchange unencoded-payload tokens.
+  - *Stray top-level `encrypted_key`*: go-jose's general JWE JSON repeats the first recipient's `encrypted_key` at the top level. jose2cpp used to reject that as mixed general/flattened, so it couldn't read any multi-recipient go-jose JWE. It now ignores exactly that copy (it isn't authenticated and nothing reads it); any other mix is still rejected.
+  - *Compact JWE with AAD*: go-jose's `CompactSerialize` silently drops `aad`, yielding an undecryptable token; jose2cpp's `compact()` refuses.
+- **CI**: `.github/workflows/ci.yml` builds and tests on Ubuntu 24.04 with Go installed and `JOSE_INTEROP_GO=ON`.
 
 ## Key Validation
 
