@@ -29,6 +29,11 @@ auto error_of(const expected<T>& v) -> errc {
     return v.error().code;
 }
 
+auto with_kid(jwk key, std::string kid) -> jwk {
+    key.set_key_id(std::move(kid));
+    return key;
+}
+
 auto as_json(std::span<const uint8_t> bytes) -> json {
     return json::parse(std::string(bytes.begin(), bytes.end()));
 }
@@ -87,13 +92,12 @@ TEST_CASE("signed JWT", "[jwt][builder]") {
 }
 
 TEST_CASE("encrypted JWT", "[jwt][builder]") {
-    const auto key = must(jwk::generate_rsa(2048));
-    const auto token = must(jwt::encrypted_token(content_encryption::A256GCM,
-                                                 {key_algorithm::RSA_OAEP_256, must(key.public_key())})
+    const auto key = must(jwk::generate_oct(32));
+    const auto token = must(jwt::encrypted_token(content_encryption::A256GCM, {key_algorithm::A256KW, key})
                                 .claims(k_standard)
                                 .serialize());
 
-    auto parsed = must(jwe::parse_compact(token, {key_algorithm::RSA_OAEP_256}, {content_encryption::A256GCM}));
+    auto parsed = must(jwe::parse_compact(token, {key_algorithm::A256KW}, {content_encryption::A256GCM}));
     CHECK(parsed.protected_header().typ() == "JWT");
     CHECK_FALSE(parsed.protected_header().cty());
     CHECK(as_json(must(parsed.decrypt(key))) == k_standard);
@@ -111,6 +115,38 @@ TEST_CASE("encrypted JWT", "[jwt][builder]") {
         REQUIRE(recipient.parameters.set("typ", "logout+jwt"));
         t = must(jwt::encrypted_token(content_encryption::A128GCM, recipient).claims(k_standard).token());
         CHECK(t.protected_header().typ() == "logout+jwt");
+    }
+    SECTION("only symmetric key wrapping: anyone could forge an unsigned token sent to a public key") {
+        const auto rsa = must(jwk::generate_rsa(2048));
+        const auto ec = must(jwk::generate_ec(ec_curve::P256));
+        const auto password = must(jwk::from_oct(std::vector<uint8_t>{'h', 'u', 'n', 't', 'e', 'r', '2', '!'}));
+        const std::vector<jwe_recipient> refused{
+            {key_algorithm::RSA_OAEP, must(rsa.public_key())},
+            {key_algorithm::RSA_OAEP_256, must(rsa.public_key())},
+            {key_algorithm::ECDH_ES, must(ec.public_key())},
+            {key_algorithm::ECDH_ES_A128KW, must(ec.public_key())},
+            {key_algorithm::ECDH_ES_A256KW, must(ec.public_key())},
+            {key_algorithm::PBES2_HS256_A128KW, password},
+            {key_algorithm::PBES2_HS512_A256KW, password},
+        };
+        for (const auto& r : refused) {
+            INFO(to_string(r.alg));
+            auto built = jwt::encrypted_token(content_encryption::A128GCM, r).claims(k_standard).serialize();
+            CHECK(error_of(built) == errc::invalid_argument);
+            CHECK_THAT(built.error().message, ContainsSubstring("nested"));
+        }
+        auto legacy = jwt::encrypted_token(content_encryption::A128GCM, {key_algorithm::RSA1_5, must(rsa.public_key())},
+                                           {.legacy = {.allow_rsa1_5 = true}})
+                          .claims(k_standard)
+                          .serialize();
+        CHECK(error_of(legacy) == errc::invalid_argument);
+        // dir and AES-GCM key wrap are fine.
+        CHECK(jwt::encrypted_token(content_encryption::A128GCM, {key_algorithm::dir, must(jwk::generate_oct(16))})
+                  .claims(k_standard)
+                  .serialize());
+        CHECK(jwt::encrypted_token(content_encryption::A128GCM, {key_algorithm::A192GCMKW, must(jwk::generate_oct(24))})
+                  .claims(k_standard)
+                  .serialize());
     }
     SECTION("compression") {
         auto t = must(jwt::encrypted_token(content_encryption::A128GCM, {key_algorithm::A128KW,
@@ -269,4 +305,217 @@ TEST_CASE("JWT builders chain safely", "[jwt][builder]") {
     builder.claims(session_claims{"reader", 1});
     auto claims = as_json(must(builder.token()).unsafe_payload());
     CHECK(claims.size() == k_standard.size() + 2);
+}
+
+// ===========================================================================
+// Parsing
+// ===========================================================================
+
+namespace {
+
+struct typed_claims {
+    std::string iss;
+    std::string sub;
+};
+
+void from_json(const json& j, typed_claims& c) {
+    j.at("iss").get_to(c.iss);
+    j.at("sub").get_to(c.sub);
+}
+
+// A compact JWS over an arbitrary payload, to test what the parser does
+// with payloads the JWT builder would never produce.
+auto raw_jws(std::string_view payload, const jwk& key, jws_sign_options options = {}) -> std::string {
+    return must(must(jws::sign(payload, {signing_algorithm::HS256, key}, options)).compact());
+}
+
+} // namespace
+
+TEST_CASE("parse_signed", "[jwt][parse]") {
+    const auto key = with_kid(must(jwk::generate_ec(ec_curve::P256)), "signing-1");
+    const auto pub = must(key.public_key());
+    const auto token = must(jwt::signed_token({signing_algorithm::ES256, key}).claims(k_standard).serialize());
+
+    auto parsed = must(jwt::parse_signed(token, {signing_algorithm::ES256}));
+    CHECK(parsed.header().typ() == "JWT");
+    CHECK(parsed.header().kid() == "signing-1");
+    CHECK(must(parsed.claims(pub)) == k_standard);
+    CHECK(must(parsed.unsafe_claims()) == k_standard);
+
+    auto set = must(jwk_set::from_json(json{{"keys", json::array({must(pub.to_json())})}}));
+    CHECK(must(parsed.claims(set)) == k_standard);
+
+    auto typed = must(jwt::decode<typed_claims>(must(parsed.claims(pub))));
+    CHECK(typed.iss == "https://auth.example.com");
+    CHECK(typed.sub == "kevin");
+
+    SECTION("the wrong key") {
+        CHECK(error_of(parsed.claims(must(must(jwk::generate_ec(ec_curve::P256)).public_key()))) ==
+              errc::invalid_signature);
+    }
+    SECTION("an algorithm outside the allowlist") {
+        CHECK(error_of(jwt::parse_signed(token, {signing_algorithm::ES384})) == errc::algorithm_mismatch);
+    }
+    SECTION("a tampered signature") {
+        auto tampered = token;
+        auto& c = tampered[tampered.size() - 5]; // inside the signature, clear of its padding bits
+        c = c == 'A' ? 'B' : 'A';
+        auto t = must(jwt::parse_signed(tampered, {signing_algorithm::ES256}));
+        CHECK(error_of(t.claims(pub)) == errc::invalid_signature);
+        // unsafe_claims() still reads them: that is what "unsafe" means.
+        CHECK(must(t.unsafe_claims()) == k_standard);
+    }
+    SECTION("a JWE isn't a signed JWT") {
+        const auto kek = must(jwk::generate_oct(16));
+        auto jwe_token = must(jwt::encrypted_token(content_encryption::A128GCM, {key_algorithm::A128KW, kek})
+                                  .claims(k_standard)
+                                  .serialize());
+        CHECK(error_of(jwt::parse_signed(jwe_token, {signing_algorithm::ES256})) == errc::invalid_token);
+    }
+    SECTION("a type mismatch in decode") {
+        auto mismatch = jwt::decode<typed_claims>(json{{"iss", 42}, {"sub", "x"}});
+        CHECK(error_of(mismatch) == errc::invalid_token);
+    }
+}
+
+TEST_CASE("signed JWT payloads must be a strict JSON object", "[jwt][parse][validation]") {
+    const auto key = must(jwk::generate_oct(32));
+    const std::vector algs{signing_algorithm::HS256};
+    auto claims_of = [&](std::string_view payload) {
+        return must(jwt::parse_signed(raw_jws(payload, key), algs)).claims(key);
+    };
+
+    CHECK(error_of(claims_of("[1,2]")) == errc::invalid_token);
+    CHECK(error_of(claims_of("\"sub\"")) == errc::invalid_token);
+    CHECK(error_of(claims_of("not json")) == errc::serialization_error);
+    CHECK(error_of(claims_of(R"({"sub":"a","sub":"b"})")) == errc::serialization_error);
+    CHECK(error_of(must(jwt::parse_signed(raw_jws("[]", key), algs)).unsafe_claims()) == errc::invalid_token);
+
+    // RFC 7797 unencoded payloads aren't JWTs.
+    CHECK(error_of(jwt::parse_signed(raw_jws("{}", key, {.b64 = false}), algs)) == errc::invalid_token);
+    CHECK(ERR_peek_error() == 0);
+}
+
+TEST_CASE("parse_encrypted", "[jwt][parse]") {
+    const auto kek = with_kid(must(jwk::generate_oct(32)), "kek-1");
+    const auto token = must(jwt::encrypted_token(content_encryption::A256GCM, {key_algorithm::A256KW, kek})
+                                .claims(k_standard)
+                                .serialize());
+
+    auto parsed = must(jwt::parse_encrypted(token, {key_algorithm::A256KW}, {content_encryption::A256GCM}));
+    CHECK(parsed.header().typ() == "JWT");
+    CHECK(must(parsed.claims(kek)) == k_standard);
+    auto set = must(jwk_set::from_json(json{{"keys", json::array({must(kek.to_json())})}}));
+    CHECK(must(parsed.claims(set)) == k_standard);
+
+    SECTION("the wrong key") {
+        CHECK(error_of(parsed.claims(must(jwk::generate_oct(32)))) == errc::decryption_failed);
+    }
+    SECTION("forgeable key algorithms can't even be listed") {
+        for (auto alg : {key_algorithm::RSA1_5, key_algorithm::RSA_OAEP, key_algorithm::RSA_OAEP_256,
+                         key_algorithm::ECDH_ES, key_algorithm::ECDH_ES_A192KW, key_algorithm::PBES2_HS384_A192KW}) {
+            INFO(to_string(alg));
+            CHECK(error_of(jwt::parse_encrypted(token, {key_algorithm::A256KW, alg}, {content_encryption::A256GCM})) ==
+                  errc::invalid_argument);
+        }
+    }
+    SECTION("a nested JWT is pointed at parse_signed_and_encrypted") {
+        auto nested = must(jwt::signed_and_encrypted({signing_algorithm::HS256, must(jwk::generate_oct(32))},
+                                                     content_encryption::A256GCM, {key_algorithm::A256KW, kek})
+                               .claims(k_standard)
+                               .serialize());
+        auto r = jwt::parse_encrypted(nested, {key_algorithm::A256KW}, {content_encryption::A256GCM});
+        CHECK(error_of(r) == errc::invalid_header);
+        CHECK_THAT(r.error().message, ContainsSubstring("parse_signed_and_encrypted"));
+
+        // Media types compare case-insensitively, so "jwt" is nested too.
+        const auto inner = must(jwt::signed_token({signing_algorithm::HS256, must(jwk::generate_oct(32))})
+                                    .claims(k_standard)
+                                    .serialize());
+        jwe_encrypt_options lower;
+        REQUIRE(lower.protected_header.set("cty", "jwt"));
+        auto lowercase = must(must(jwe::encrypt(inner, content_encryption::A256GCM, {key_algorithm::A256KW, kek}, lower))
+                                  .compact());
+        CHECK(error_of(jwt::parse_encrypted(lowercase, {key_algorithm::A256KW}, {content_encryption::A256GCM})) ==
+              errc::invalid_header);
+    }
+}
+
+TEST_CASE("parse_signed_and_encrypted", "[jwt][parse]") {
+    const auto signing_key = must(jwk::generate_ec(ec_curve::P384));
+    const auto signing_pub = must(signing_key.public_key());
+
+    SECTION("RSA-OAEP, ECDH-ES and PBES2 are fine for nested tokens") {
+        const auto rsa = must(jwk::generate_rsa(2048));
+        const auto ec = must(jwk::generate_ec(ec_curve::P256));
+        const auto password = must(jwk::from_oct(std::vector<uint8_t>{'c', 'o', 'r', 'r', 'e', 'c', 't', '!'}));
+        const std::vector<std::pair<jwe_recipient, jwk>> cases{
+            {{key_algorithm::RSA_OAEP_256, must(rsa.public_key())}, rsa},
+            {{key_algorithm::ECDH_ES_A256KW, must(ec.public_key())}, ec},
+            {{key_algorithm::ECDH_ES, must(ec.public_key())}, ec},
+            {{key_algorithm::PBES2_HS256_A128KW, password}, password},
+        };
+        for (const auto& [recipient, decryption_key] : cases) {
+            INFO(to_string(recipient.alg));
+            auto token = must(jwt::signed_and_encrypted({signing_algorithm::ES384, signing_key},
+                                                        content_encryption::A256GCM, recipient)
+                                  .claims(k_standard)
+                                  .serialize());
+            auto parsed = must(jwt::parse_signed_and_encrypted(token, {recipient.alg}, {content_encryption::A256GCM},
+                                                               {signing_algorithm::ES384}));
+            CHECK(parsed.header().cty() == "JWT");
+            auto inner = must(parsed.decrypt(decryption_key));
+            CHECK(inner.header().typ() == "JWT");
+            CHECK(must(inner.claims(signing_pub)) == k_standard);
+        }
+    }
+
+    const auto kek = must(jwk::generate_oct(16));
+    const auto token = must(jwt::signed_and_encrypted({signing_algorithm::ES384, signing_key},
+                                                      content_encryption::A128CBC_HS256, {key_algorithm::A128KW, kek})
+                                .claims(k_standard)
+                                .serialize());
+    auto parsed = must(jwt::parse_signed_and_encrypted(token, {key_algorithm::A128KW},
+                                                       {content_encryption::A128CBC_HS256},
+                                                       {signing_algorithm::ES384}));
+
+    SECTION("the wrong decryption key") {
+        CHECK(error_of(parsed.decrypt(must(jwk::generate_oct(16)))) == errc::decryption_failed);
+    }
+    SECTION("the inner signature algorithm must be allowed") {
+        auto other = must(jwt::parse_signed_and_encrypted(token, {key_algorithm::A128KW},
+                                                          {content_encryption::A128CBC_HS256},
+                                                          {signing_algorithm::ES256}));
+        CHECK(error_of(other.decrypt(kek)) == errc::algorithm_mismatch);
+    }
+    SECTION("the inner signature is checked") {
+        auto inner = must(parsed.decrypt(kek));
+        CHECK(error_of(inner.claims(must(must(jwk::generate_ec(ec_curve::P384)).public_key()))) ==
+              errc::invalid_signature);
+    }
+    SECTION("no signature algorithms") {
+        CHECK(error_of(jwt::parse_signed_and_encrypted(token, {key_algorithm::A128KW},
+                                                       {content_encryption::A128CBC_HS256}, {})) ==
+              errc::invalid_argument);
+    }
+    SECTION("cty must say JWT, in any case") {
+        const auto hmac = must(jwk::generate_oct(32));
+        const auto inner_jwt = must(jwt::signed_token({signing_algorithm::HS256, hmac}).claims(k_standard).serialize());
+
+        // A JWS encrypted without "cty".
+        auto without = must(must(jwe::encrypt(inner_jwt, content_encryption::A128GCM, {key_algorithm::A128KW, kek}))
+                                .compact());
+        CHECK(error_of(jwt::parse_signed_and_encrypted(without, {key_algorithm::A128KW}, {content_encryption::A128GCM},
+                                                       {signing_algorithm::HS256})) == errc::invalid_header);
+
+        jwe_encrypt_options lower;
+        REQUIRE(lower.protected_header.set("cty", "jwt"));
+        auto lowercase = must(must(jwe::encrypt(inner_jwt, content_encryption::A128GCM,
+                                                {key_algorithm::A128KW, kek}, lower))
+                                  .compact());
+        auto ok = must(jwt::parse_signed_and_encrypted(lowercase, {key_algorithm::A128KW},
+                                                       {content_encryption::A128GCM}, {signing_algorithm::HS256}));
+        CHECK(must(must(ok.decrypt(kek)).claims(hmac)) == k_standard);
+    }
+    CHECK(ERR_peek_error() == 0);
 }

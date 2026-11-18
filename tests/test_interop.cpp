@@ -164,11 +164,49 @@ auto check_incompatible_jws(const json& v) -> void {
     ERR_clear_error();
 }
 
+// Parses and opens a JWT vector; the claims, or the first error.
+auto jwt_claims(const json& v) -> expected<json> {
+    const auto kind = v.at("kind").get<std::string>();
+    std::vector<signing_algorithm> sig_algs;
+    for (const auto& a : v.value("signature_algorithms", json::array()))
+        sig_algs.push_back(must(parse_signing_algorithm(a.get<std::string>()), "alg"));
+    std::vector<key_algorithm> key_algs;
+    for (const auto& a : v.value("key_algorithms", json::array()))
+        key_algs.push_back(must(parse_key_algorithm(a.get<std::string>()), "alg"));
+    std::vector<content_encryption> encs;
+    if (v.contains("enc")) encs.push_back(must(parse_content_encryption(v.at("enc").get<std::string>()), "enc"));
+    const auto token = v.at("token").get<std::string>();
+
+    if (kind == "signed") {
+        auto parsed = jwt::parse_signed(token, sig_algs);
+        if (!parsed) return jose::unexpected(parsed.error());
+        return parsed->claims(must(jwk::from_json(v.at("verification_key")), "key"));
+    }
+    if (kind == "encrypted") {
+        auto parsed = jwt::parse_encrypted(token, key_algs, encs);
+        if (!parsed) return jose::unexpected(parsed.error());
+        return parsed->claims(must(jwk::from_json(v.at("decryption_key")), "key"));
+    }
+    REQUIRE(kind == "nested");
+    auto parsed = jwt::parse_signed_and_encrypted(token, key_algs, encs, sig_algs);
+    if (!parsed) return jose::unexpected(parsed.error());
+    auto inner = parsed->decrypt(must(jwk::from_json(v.at("decryption_key")), "key"));
+    if (!inner) return jose::unexpected(inner.error());
+    return inner->claims(must(jwk::from_json(v.at("verification_key")), "key"));
+}
+
+auto check_jwt(const json& v) -> void {
+    INFO("JWT " << v.at("name").get<std::string>());
+    CHECK(must(jwt_claims(v), "claims") == v.at("claims"));
+}
+
 auto check_file(const json& file) -> void {
     size_t jws_count = 0;
     size_t jwe_count = 0;
     for (const auto& v : file.at("jws")) jws_count += check_jws(v);
     for (const auto& v : file.at("jwe")) jwe_count += check_jwe(v);
+    for (const auto& v : file.at("jwt")) check_jwt(v);
+    CHECK_FALSE(file.at("jwt").empty());
     // The other library's incompatibilities must be rejected; jose2cpp's
     // own (RFC-conformant) ones must verify.
     const bool own = file.value("producer", "").starts_with("jose2cpp");
@@ -177,6 +215,16 @@ auto check_file(const json& file) -> void {
             jws_count += check_jws(v);
         else
             check_incompatible_jws(v);
+    }
+    // go-jose produces none of these yet; jose2cpp's own must work in jose2cpp.
+    for (const auto& v : file.value("jwt_incompatible", json::array())) {
+        if (own) {
+            check_jwt(v);
+        } else {
+            INFO("JWT " << v.at("name").get<std::string>() << " must be rejected");
+            CHECK_FALSE(jwt_claims(v));
+            ERR_clear_error();
+        }
     }
     INFO("producer: " << file.value("producer", "?"));
     CHECK(jws_count > 0);

@@ -1,7 +1,7 @@
 # jose2cpp
 
 A C++20 take on the Go JOSE library. jose2cpp does JSON Object Signing and
-Encryption (JWS, JWE, JWK, and JWT building, with parsing next) on top of OpenSSL 3,
+Encryption (JWS, JWE, JWK and JWT) on top of OpenSSL 3,
 and it follows go-jose v4's rules: parsing always takes the algorithms you
 accept, and a key embedded in a token is never trusted on its own.
 
@@ -125,6 +125,33 @@ auto sealed = jose::jwt::signed_and_encrypted(
 
 Any error along the chain comes back from `serialize()` (or `token()`, which
 gives you the `jws` / `jwe` itself), so one check covers the whole thing.
+
+Parsing works the same way as JWS and JWE: you list the algorithms you accept,
+and you only get the claims after the signature checks out or the JWE opens.
+
+```cpp
+auto parsed = jose::jwt::parse_signed(token, {jose::signing_algorithm::ES256});
+auto claims = parsed->claims(public_key);              // nlohmann::json, verified
+auto mine   = jose::jwt::decode<my_claims>(*claims);   // via your from_json
+
+auto nested = jose::jwt::parse_signed_and_encrypted(sealed,
+                  {jose::key_algorithm::ECDH_ES_A256KW}, {jose::content_encryption::A256GCM},
+                  {jose::signing_algorithm::EdDSA});
+auto inner  = nested->decrypt(my_private_key);         // the signed JWT inside
+auto verified = inner->claims(their_signing_key);
+```
+
+One rule to know about. A JWT that's only encrypted has no signature, so
+anyone who can encrypt to you can make one. With RSA or ECDH-ES that's anyone
+holding your public key, and PBES2 is only as good as the password. So
+encrypted-only JWTs are limited to `dir`, AES key wrap and AES-GCM key wrap,
+both when you build one and when you parse one. go-jose's parser has the same
+limit, but its builder doesn't, so go-jose will happily make an encrypted-only
+JWT that neither library will accept. Nested JWTs are signed inside, so they can use any key
+algorithm, RSA-OAEP and ECDH-ES included, which is what OIDC encrypted ID
+tokens need. That's where we part ways with go-jose: it refuses those for
+nested JWTs too, so a go-jose service can't read a jose2cpp nested JWT that
+uses RSA or ECDH-ES outside. Details in [tests/interop](tests/interop/README.md).
 
 ### HSMs and key services (opaque keys)
 

@@ -19,10 +19,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"runtime/debug"
 	"strings"
 
 	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 type jwsVector struct {
@@ -45,13 +47,31 @@ type jweVector struct {
 	Serializations map[string]string `json:"serializations"`
 }
 
+// A JWT: "signed" (verification_key), "encrypted" (decryption_key) or
+// "nested" (both). claims is the expected claims object.
+type jwtVector struct {
+	Name                string          `json:"name"`
+	Reason              string          `json:"reason,omitempty"`        // jwt_incompatible only
+	RejectedWith        string          `json:"rejected_with,omitempty"` // the consumer's error must contain this
+	Kind                string          `json:"kind"`
+	SignatureAlgorithms []string        `json:"signature_algorithms,omitempty"`
+	KeyAlgorithms       []string        `json:"key_algorithms,omitempty"`
+	Encryption          string          `json:"enc,omitempty"`
+	VerificationKey     json.RawMessage `json:"verification_key,omitempty"`
+	DecryptionKey       json.RawMessage `json:"decryption_key,omitempty"`
+	Claims              json.RawMessage `json:"claims"`
+	Token               string          `json:"token"`
+}
+
 type vectorFile struct {
 	Producer string      `json:"producer"`
 	JWS      []jwsVector `json:"jws"`
 	JWE      []jweVector `json:"jwe"`
+	JWT      []jwtVector `json:"jwt"`
 	// Known incompatibilities: the consumer must NOT accept these. If it
 	// starts to, the difference has been fixed and the vector can move.
 	JWSIncompatible []jwsVector `json:"jws_incompatible"`
+	JWTIncompatible []jwtVector `json:"jwt_incompatible"`
 }
 
 // go-jose v4 signs the raw payload when "b64" is false but still
@@ -340,10 +360,73 @@ func generateJWE(k *keys) []jweVector {
 	return out
 }
 
+var jwtClaims = map[string]interface{}{
+	"iss":  "https://issuer.example",
+	"sub":  "kevin",
+	"aud":  []interface{}{"api", "web"},
+	"exp":  1900000000,
+	"nbf":  1700000000,
+	"name": "Kevin ✓",
+	"ctx":  map[string]interface{}{"role": "admin", "levels": []interface{}{1, 2, 3}},
+}
+
+func generateJWT(k *keys) []jwtVector {
+	claims := must(json.Marshal(jwtClaims))
+	var out []jwtVector
+
+	for _, alg := range []jose.SignatureAlgorithm{jose.HS256, jose.RS256, jose.PS384, jose.ES256, jose.ES512, jose.EdDSA} {
+		key := k.signingKey(alg)
+		signer := must(jose.NewSigner(jose.SigningKey{Algorithm: alg, Key: key}, (&jose.SignerOptions{}).WithType("JWT")))
+		out = append(out, jwtVector{
+			Name: "signed " + string(alg), Kind: "signed", SignatureAlgorithms: []string{string(alg)},
+			VerificationKey: publicJWK(key), Claims: claims,
+			Token: must(jwt.Signed(signer).Claims(jwtClaims).Serialize()),
+		})
+	}
+
+	type encCase struct {
+		alg jose.KeyAlgorithm
+		enc jose.ContentEncryption
+	}
+	for _, c := range []encCase{{jose.DIRECT, jose.A128GCM}, {jose.A256KW, jose.A256GCM}, {jose.A192GCMKW, jose.A192CBC_HS384}} {
+		rcpt, key := k.recipient(c.alg, c.enc, "")
+		enc := must(jose.NewEncrypter(c.enc, rcpt, (&jose.EncrypterOptions{}).WithType("JWT")))
+		out = append(out, jwtVector{
+			Name: "encrypted " + string(c.alg) + " " + string(c.enc), Kind: "encrypted",
+			KeyAlgorithms: []string{string(c.alg)}, Encryption: string(c.enc),
+			DecryptionKey: marshal(key), Claims: claims,
+			Token: must(jwt.Encrypted(enc).Claims(jwtClaims).Serialize()),
+		})
+	}
+
+	type nestedCase struct {
+		alg jose.KeyAlgorithm
+		enc jose.ContentEncryption
+		sig jose.SignatureAlgorithm
+	}
+	for _, c := range []nestedCase{
+		{jose.A128KW, jose.A128GCM, jose.RS256},
+		{jose.DIRECT, jose.A256GCM, jose.ES256},
+		{jose.A256GCMKW, jose.A256CBC_HS512, jose.EdDSA},
+	} {
+		sigKey := k.signingKey(c.sig)
+		signer := must(jose.NewSigner(jose.SigningKey{Algorithm: c.sig, Key: sigKey}, (&jose.SignerOptions{}).WithType("JWT")))
+		rcpt, decKey := k.recipient(c.alg, c.enc, "")
+		enc := must(jose.NewEncrypter(c.enc, rcpt, (&jose.EncrypterOptions{}).WithContentType("JWT")))
+		out = append(out, jwtVector{
+			Name: "nested " + string(c.alg) + " " + string(c.enc) + " " + string(c.sig), Kind: "nested",
+			SignatureAlgorithms: []string{string(c.sig)}, KeyAlgorithms: []string{string(c.alg)},
+			Encryption: string(c.enc), VerificationKey: publicJWK(sigKey), DecryptionKey: marshal(decKey),
+			Claims: claims, Token: must(jwt.SignedAndEncrypted(signer, enc).Claims(jwtClaims).Serialize()),
+		})
+	}
+	return out
+}
+
 func generate(path string) error {
 	k := newKeys()
-	file := vectorFile{Producer: goJoseVersion(), JWS: generateJWS(k), JWE: generateJWE(k),
-		JWSIncompatible: generateIncompatibleJWS(k)}
+	file := vectorFile{Producer: goJoseVersion(), JWS: generateJWS(k), JWE: generateJWE(k), JWT: generateJWT(k),
+		JWSIncompatible: generateIncompatibleJWS(k), JWTIncompatible: []jwtVector{}}
 	data, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		return err
@@ -444,6 +527,82 @@ func verifyJWE(v jweVector) error {
 	return nil
 }
 
+func parseKey(raw json.RawMessage) (jose.JSONWebKey, error) {
+	var k jose.JSONWebKey
+	err := json.Unmarshal(raw, &k)
+	return k, err
+}
+
+func verifyJWT(v jwtVector) error {
+	var sigAlgs []jose.SignatureAlgorithm
+	for _, a := range v.SignatureAlgorithms {
+		sigAlgs = append(sigAlgs, jose.SignatureAlgorithm(a))
+	}
+	var keyAlgs []jose.KeyAlgorithm
+	for _, a := range v.KeyAlgorithms {
+		keyAlgs = append(keyAlgs, jose.KeyAlgorithm(a))
+	}
+	encs := []jose.ContentEncryption{jose.ContentEncryption(v.Encryption)}
+
+	var got map[string]interface{}
+	switch v.Kind {
+	case "signed":
+		key, err := parseKey(v.VerificationKey)
+		if err != nil {
+			return err
+		}
+		tok, err := jwt.ParseSigned(v.Token, sigAlgs)
+		if err != nil {
+			return fmt.Errorf("parse: %w", err)
+		}
+		if err := tok.Claims(key, &got); err != nil {
+			return fmt.Errorf("claims: %w", err)
+		}
+	case "encrypted":
+		key, err := parseKey(v.DecryptionKey)
+		if err != nil {
+			return err
+		}
+		tok, err := jwt.ParseEncrypted(v.Token, keyAlgs, encs)
+		if err != nil {
+			return fmt.Errorf("parse: %w", err)
+		}
+		if err := tok.Claims(key, &got); err != nil {
+			return fmt.Errorf("claims: %w", err)
+		}
+	case "nested":
+		verKey, err := parseKey(v.VerificationKey)
+		if err != nil {
+			return err
+		}
+		decKey, err := parseKey(v.DecryptionKey)
+		if err != nil {
+			return err
+		}
+		tok, err := jwt.ParseSignedAndEncrypted(v.Token, keyAlgs, encs, sigAlgs)
+		if err != nil {
+			return fmt.Errorf("parse: %w", err)
+		}
+		inner, err := tok.Decrypt(decKey)
+		if err != nil {
+			return fmt.Errorf("decrypt: %w", err)
+		}
+		if err := inner.Claims(verKey, &got); err != nil {
+			return fmt.Errorf("claims: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown kind %q", v.Kind)
+	}
+	var want map[string]interface{}
+	if err := json.Unmarshal(v.Claims, &want); err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(got, want) {
+		return fmt.Errorf("claims mismatch: got %v, want %v", got, want)
+	}
+	return nil
+}
+
 func verify(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -453,7 +612,7 @@ func verify(path string) error {
 	if err := json.Unmarshal(data, &file); err != nil {
 		return err
 	}
-	if len(file.JWS) == 0 || len(file.JWE) == 0 {
+	if len(file.JWS) == 0 || len(file.JWE) == 0 || len(file.JWT) == 0 {
 		return fmt.Errorf("%s has no vectors", path)
 	}
 	var failures []string
@@ -470,9 +629,29 @@ func verify(path string) error {
 			failures = append(failures, "JWE "+v.Name+": "+err.Error())
 		}
 	}
+	for _, v := range file.JWT {
+		count++
+		if err := verifyJWT(v); err != nil {
+			failures = append(failures, "JWT "+v.Name+": "+err.Error())
+		}
+	}
 	// Each serialization of the other library's known incompatibilities
 	// must fail here; go-jose's own must of course still verify.
 	own := strings.HasPrefix(file.Producer, "go-jose")
+	for _, v := range file.JWTIncompatible {
+		err := verifyJWT(v)
+		if own && err != nil {
+			failures = append(failures, "JWT "+v.Name+": "+err.Error())
+		} else if !own && err == nil {
+			failures = append(failures, "JWT "+v.Name+": listed as incompatible ("+v.Reason+
+				") but go-jose accepted it; move it to \"jwt\"")
+		} else if !own && !strings.Contains(err.Error(), v.RejectedWith) {
+			// Rejected, but not for the documented reason: the vector or
+			// go-jose has changed, so the listed difference is unproven.
+			failures = append(failures, "JWT "+v.Name+": expected go-jose to reject it with \""+v.RejectedWith+
+				"\", got: "+err.Error())
+		}
+	}
 	for _, v := range file.JWSIncompatible {
 		if own {
 			count += len(v.Serializations)
@@ -491,13 +670,14 @@ func verify(path string) error {
 		}
 	}
 	if len(failures) > 0 {
-		return fmt.Errorf("%d of %d vectors from %s failed:\n  %s", len(failures), len(file.JWS)+len(file.JWE),
+		return fmt.Errorf("%d of %d vectors from %s failed:\n  %s", len(failures),
+			len(file.JWS)+len(file.JWE)+len(file.JWT)+len(file.JWSIncompatible)+len(file.JWTIncompatible),
 			file.Producer, strings.Join(failures, "\n  "))
 	}
-	fmt.Printf("%s verified %d JWS and %d JWE vectors (%d serializations) from %s", goJoseVersion(),
-		len(file.JWS), len(file.JWE), count, file.Producer)
+	fmt.Printf("%s verified %d JWS, %d JWE and %d JWT vectors (%d tokens) from %s", goJoseVersion(),
+		len(file.JWS), len(file.JWE), len(file.JWT), count, file.Producer)
 	if !own {
-		fmt.Printf("; %d known incompatibilities still rejected", len(file.JWSIncompatible))
+		fmt.Printf("; %d known incompatibilities still rejected", len(file.JWSIncompatible)+len(file.JWTIncompatible))
 	}
 	fmt.Println()
 	return nil
