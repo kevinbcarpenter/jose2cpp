@@ -38,6 +38,9 @@ enum class errc {
     // An opaque key's backend (HSM, KMS, ...) couldn't perform the
     // operation: network, permissions, device offline. See opaque.hpp.
     key_unavailable,
+    // A JWT claim doesn't match what the caller expects ("iss", "sub",
+    // "aud", "jti"). See jwt::registered_claims::validate.
+    invalid_claim,
 };
 
 struct error {

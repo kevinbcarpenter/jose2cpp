@@ -137,4 +137,55 @@ void from_json(const json& j, registered_claims& c) {
     c = std::move(out);
 }
 
+// ===========================================================================
+// validation
+// ===========================================================================
+
+namespace {
+
+auto check_string(const char* name, const std::optional<std::string>& want, const std::optional<std::string>& got)
+    -> expected<void> {
+    if (!want) return {};
+    if (!got) return make_error(errc::missing_claim, std::string("JWT claim \"") + name + "\" is missing");
+    if (*got != *want)
+        return make_error(errc::invalid_claim, std::string("JWT claim \"") + name + "\" doesn't match");
+    return {};
+}
+
+} // namespace
+
+auto registered_claims::validate(const expected_claims& want, std::chrono::seconds leeway) const
+    -> jose::expected<void> {
+    constexpr auto max = numeric_date::max_seconds;
+    // The only arithmetic is time +/- leeway; the dates are only compared.
+    // system_clock's range is far below 2^62 seconds (about 2^43 seconds
+    // even with microsecond ticks), so with |leeway| < 2^62 neither sum can
+    // overflow, whatever the dates hold.
+    if (leeway.count() >= max || leeway.count() <= -max)
+        return make_error(errc::invalid_argument, "JWT validation leeway must be less than 2^62 seconds");
+
+    if (auto r = check_string("iss", want.issuer, issuer); !r) return r;
+    if (auto r = check_string("sub", want.subject, subject); !r) return r;
+    if (auto r = check_string("jti", want.id, id); !r) return r;
+    if (!want.any_audience.empty()) {
+        if (audience.empty()) return make_error(errc::missing_claim, "JWT claim \"aud\" is missing");
+        const auto values = want.any_audience.values();
+        if (std::ranges::none_of(values, [&](const std::string& v) { return audience.contains(v); }))
+            return make_error(errc::invalid_claim, "JWT claim \"aud\" doesn't include an expected audience");
+    }
+
+    // The dates and the leeway are whole seconds, so comparing the time
+    // floored to a second gives the same answer as comparing it exactly:
+    // for integer d, t >= d iff floor(t) >= d.
+    const auto when = want.time.value_or(std::chrono::system_clock::now());
+    const std::int64_t t = std::chrono::floor<std::chrono::seconds>(when).time_since_epoch().count();
+    const std::int64_t l = leeway.count();
+    if (not_before && t + l < not_before->seconds())
+        return make_error(errc::not_yet_valid, "JWT isn't valid yet (\"nbf\")");
+    if (expiry && t - l >= expiry->seconds()) return make_error(errc::expired, "JWT has expired (\"exp\")");
+    if (issued_at && t + l < issued_at->seconds())
+        return make_error(errc::not_yet_valid, "JWT was issued in the future (\"iat\")");
+    return {};
+}
+
 } // namespace jose::jwt

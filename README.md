@@ -156,8 +156,30 @@ jose::jwt::registered_claims standard{
 auto token = jose::jwt::signed_token(signer).claims(standard).claims(my_private_claims).serialize();
 
 auto back = jose::jwt::decode<jose::jwt::registered_claims>(*verified);
-if (back && back->audience.contains("api")) { /* ... */ }
+if (!back) return back.error();  // a malformed claim, e.g. "exp":"tomorrow"
+auto ok = back->validate({.issuer = "https://auth.example.com", .any_audience = {"api"}});
 ```
+
+`validate` works like go-jose's `Claims.Validate`. It checks `iss`, `sub`,
+`jti` and `aud` against what you ask for and `nbf`, `exp` and `iat` against
+the current time (or `.time`), with a minute of leeway by default. Pass a
+second argument to change that: `validate(want, 0s)`, or a negative leeway on
+the client side to ask "will the server still take this?". It reports the
+first failure as `errc::missing_claim`, `invalid_claim`, `not_yet_valid` or
+`expired`.
+
+Two things it doesn't do, same as go-jose. It doesn't check `aud` unless you
+set `any_audience`, even though RFC 7519 says a service should reject a token
+whose `aud` doesn't name it. Doing that by default would make `aud` required
+the moment a token carries one, and a service that forgot to set
+`any_audience` would start turning away good tokens. So set it whenever your
+tokens carry an audience. It also doesn't require `exp`, so a token without
+one never expires; if yours should always have one, check for it. We differ
+from go-jose in two places. At exactly the `exp` second the token is expired,
+because RFC 7519 says "on or after"; go-jose still takes it at that instant.
+And an empty string you ask for is checked like any other value, so
+`.issuer = ""` means "iss must be empty". go-jose reads `""` as "don't check";
+leave the field unset for that.
 
 A badly formed claim, like `"exp":"tomorrow"` or `"exp":null`, is an error
 rather than "no expiry". That one matters: a parser that shrugs off a bad

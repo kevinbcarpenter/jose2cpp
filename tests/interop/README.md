@@ -17,7 +17,9 @@ AES key wrap and AES-GCM key wrap, and nested, each checked down to the
 claims. One JWT each way is built from the library's own claims type
 (go-jose's `jwt.Claims`, jose2cpp's `jwt::registered_claims`) with a single
 audience, which both write as a plain string, and every JWT's claims are also
-read back through the other library's claims type. Consumers verify or decrypt with every listed key and (jose2cpp)
+read back through the other library's claims type. go-jose also writes out
+40 claims-validation cases with its own answers (see below), and jose2cpp has
+to agree with each one. Consumers verify or decrypt with every listed key and (jose2cpp)
 re-serialize the parsed object, compact byte-for-byte and JSON by value.
 
 Not covered because go-jose doesn't support them: Ed448, and ECDH-ES with
@@ -55,9 +57,16 @@ proxy.
             "verification_key": JWK, "decryption_key": JWK,
             "claims": { ... }, "token": "<compact>" }],
   "jws_incompatible": [{ ...as "jws", "reason": "..." }],
-  "jwt_incompatible": [{ ...as "jwt", "reason": "..." }]
+  "jwt_incompatible": [{ ...as "jwt", "reason": "..." }],
+  "jwt_validation": [{ "name", "claims": { ... }, "expected": { "iss", "sub", "aud": [...], "jti" },
+                       "time": <seconds>, "time_nanos": <nanoseconds, a whole number of microseconds>, "leeway": <seconds>,
+                       "result": "" | "iss" | "sub" | "jti" | "aud" | "nbf" | "exp" | "iat" }]
 }
 ```
+
+`jwt_validation` is in go-jose's file only. Each case is go-jose's
+`ValidateWithLeeway` answer: `""` when the claims pass, otherwise the claim
+that failed. An expectation go-jose wouldn't check (`""`) is left out.
 
 A `jwt` entry has only the fields its `kind` needs: a signed JWT has no
 decryption key, an encrypted one no signature algorithms or verification key.
@@ -105,3 +114,8 @@ into `jws` or `jwt`.
 - **AAD in compact form.** go-jose's JWE `CompactSerialize` doesn't refuse a
   JWE with `aad`; it drops it, producing a token that can't be decrypted.
   jose2cpp's `compact()` refuses. The `aad` vectors are JSON-only.
+- **A token at the instant of expiry.** RFC 7519 §4.1.4 says a JWT must not
+  be accepted "on or after" `exp`. jose2cpp's `validate` treats exactly `exp`
+  plus the leeway as expired; go-jose's `ValidateWithLeeway` only rejects
+  after it. Three `jwt_validation` cases sit on that instant, and the C++
+  test requires go-jose to still accept them and jose2cpp to reject them.

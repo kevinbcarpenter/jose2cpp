@@ -13,6 +13,8 @@
 //
 //   auto verified = parsed->claims(key);                                  // nlohmann::json
 //   auto standard = jose::jwt::decode<jose::jwt::registered_claims>(*verified);
+//   if (!standard) return standard.error();                             // a malformed claim
+//   auto ok = standard->validate({.issuer = "https://auth.example.com", .any_audience = {"api"}});
 //
 // Conversion to and from JSON goes through nlohmann's to_json / from_json,
 // so these types also work as members of your own claims structs. A
@@ -20,6 +22,8 @@
 // date out of range) is an error from jwt::decode (errc::invalid_token);
 // called directly, from_json throws a nlohmann::json::exception, as
 // nlohmann conversions do.
+
+#include "jose/error.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -106,6 +110,23 @@ private:
 void to_json(nlohmann::json& j, const audience& aud);
 void from_json(const nlohmann::json& j, audience& aud);
 
+// What registered_claims::validate checks, like go-jose's jwt.Expected.
+// Every member is optional; one left unset isn't checked. An empty string
+// is an expectation like any other (go-jose reads "" as "don't check").
+struct expected_claims {
+    std::optional<std::string> issuer = std::nullopt;   // "iss" must equal this
+    std::optional<std::string> subject = std::nullopt;  // "sub" must equal this
+    jwt::audience any_audience = {};                    // "aud" must hold at least one of these
+    std::optional<std::string> id = std::nullopt;       // "jti" must equal this
+    // The time to check "nbf", "exp" and "iat" against; unset means now.
+    std::optional<std::chrono::system_clock::time_point> time = std::nullopt;
+};
+
+// go-jose's DefaultLeeway. It lets a token through for a minute after it
+// expires, which suits a server allowing for clock skew; a client asking
+// "will the server still take this?" should pass zero or a negative leeway.
+inline constexpr std::chrono::seconds default_leeway = std::chrono::minutes(1);
+
 // RFC 7519 §4.1. A claim that is absent is std::nullopt (or an empty
 // audience). Two differences from go-jose: an empty string is kept as
 // present, and a registered claim set to null is malformed rather than
@@ -121,6 +142,32 @@ struct registered_claims {
     std::optional<numeric_date> not_before = std::nullopt;  // "nbf"
     std::optional<numeric_date> issued_at = std::nullopt;   // "iat"
     std::optional<std::string> id = std::nullopt;           // "jti"
+
+    // Checks the claims against `want`, in go-jose's order (iss, sub, jti,
+    // aud, nbf, exp, iat), and reports the first failure:
+    //
+    //   errc::missing_claim   an expected iss, sub, jti or aud is absent
+    //   errc::invalid_claim   it's present but doesn't match
+    //   errc::not_yet_valid   time + leeway is before "nbf", or before "iat"
+    //                         (a token issued in the future)
+    //   errc::expired         time - leeway is at or after "exp"
+    //   errc::invalid_argument  |leeway| is 2^62 seconds or more
+    //
+    // Absent time claims aren't required: a token without "exp" never
+    // expires, as in go-jose. Require one by checking for it yourself.
+    // Nor is "aud" checked unless any_audience is set, as in go-jose, even
+    // though RFC 7519 §4.1.3 says a recipient that doesn't find itself in
+    // "aud" must reject the token. Enforcing that here would make "aud"
+    // required as soon as a token carries one, so a caller who forgot
+    // any_audience would see good tokens fail. Set any_audience whenever
+    // tokens carry one.
+    //
+    // Two differences from go-jose: at exactly "exp" (plus leeway) the token
+    // is expired, as RFC 7519 §4.1.4 says ("on or after"), where go-jose
+    // still accepts it at that instant; and an empty-string expectation is
+    // checked (see expected_claims), where go-jose reads "" as "don't check".
+    [[nodiscard]] auto validate(const expected_claims& want, std::chrono::seconds leeway = default_leeway) const
+        -> jose::expected<void>;
 
     friend auto operator==(const registered_claims&, const registered_claims&) -> bool = default;
 };

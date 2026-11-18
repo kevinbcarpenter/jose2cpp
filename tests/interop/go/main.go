@@ -64,6 +64,27 @@ type jwtVector struct {
 	Token               string          `json:"token"`
 }
 
+// A claims-validation case: go-jose's answer for these claims, checked
+// against these expectations at this time with this leeway. Result is ""
+// when the claims are valid, otherwise the claim that failed.
+type validationCase struct {
+	Name     string          `json:"name"`
+	Claims   json.RawMessage `json:"claims"`
+	Expected expectedClaims  `json:"expected"`
+	Time     int64           `json:"time"`       // seconds since the epoch
+	Nanos    int64           `json:"time_nanos"` // nanoseconds, a whole number of microseconds so every clock can hold it
+	Leeway   int64           `json:"leeway"`     // seconds
+	Result   string          `json:"result"`
+}
+
+// jwt.Expected, with "" (go-jose's "don't check") left out.
+type expectedClaims struct {
+	Issuer      string   `json:"iss,omitempty"`
+	Subject     string   `json:"sub,omitempty"`
+	AnyAudience []string `json:"aud,omitempty"`
+	ID          string   `json:"jti,omitempty"`
+}
+
 type vectorFile struct {
 	Producer string      `json:"producer"`
 	JWS      []jwsVector `json:"jws"`
@@ -73,6 +94,9 @@ type vectorFile struct {
 	// starts to, the difference has been fixed and the vector can move.
 	JWSIncompatible []jwsVector `json:"jws_incompatible"`
 	JWTIncompatible []jwtVector `json:"jwt_incompatible"`
+
+	// go-jose only: jose2cpp's validation is checked against these.
+	JWTValidation []validationCase `json:"jwt_validation,omitempty"`
 }
 
 // go-jose v4 signs the raw payload when "b64" is false but still
@@ -441,10 +465,108 @@ func generateJWT(k *keys) []jwtVector {
 	return out
 }
 
+func validationResult(err error) string {
+	switch err {
+	case nil:
+		return ""
+	case jwt.ErrInvalidIssuer:
+		return "iss"
+	case jwt.ErrInvalidSubject:
+		return "sub"
+	case jwt.ErrInvalidID:
+		return "jti"
+	case jwt.ErrInvalidAudience:
+		return "aud"
+	case jwt.ErrNotValidYet:
+		return "nbf"
+	case jwt.ErrExpired:
+		return "exp"
+	case jwt.ErrIssuedInTheFuture:
+		return "iat"
+	}
+	panic(err)
+}
+
+func generateValidation() []validationCase {
+	date := func(s int64) *jwt.NumericDate { return jwt.NewNumericDate(time.Unix(s, 0)) }
+	full := jwt.Claims{
+		Issuer: "https://issuer.example", Subject: "kevin", Audience: jwt.Audience{"api", "web"},
+		NotBefore: date(1000), Expiry: date(2000), IssuedAt: date(1000), ID: "token-1",
+	}
+	timesOnly := jwt.Claims{NotBefore: date(1000), Expiry: date(2000)}
+	type c struct {
+		name   string
+		claims jwt.Claims
+		want   jwt.Expected
+		at     int64
+		micros int64
+		leeway int64
+	}
+	all := jwt.Expected{Issuer: "https://issuer.example", Subject: "kevin", AnyAudience: jwt.Audience{"web"}, ID: "token-1"}
+	cases := []c{
+		{"everything matches", full, all, 1500, 0, 0},
+		{"iss differs", full, jwt.Expected{Issuer: "https://evil.example"}, 1500, 0, 0},
+		{"iss expected but absent", timesOnly, jwt.Expected{Issuer: "https://issuer.example"}, 1500, 0, 0},
+		{"sub differs in case", full, jwt.Expected{Subject: "Kevin"}, 1500, 0, 0},
+		{"jti differs", full, jwt.Expected{ID: "token-2"}, 1500, 0, 0},
+		{"aud has one of several", full, jwt.Expected{AnyAudience: jwt.Audience{"other", "web"}}, 1500, 0, 0},
+		{"aud has none", full, jwt.Expected{AnyAudience: jwt.Audience{"other"}}, 1500, 0, 0},
+		{"aud expected but absent", timesOnly, jwt.Expected{AnyAudience: jwt.Audience{"api"}}, 1500, 0, 0},
+		{"aud present but not expected", full, jwt.Expected{}, 1500, 0, 0},
+		{"everything wrong reports iss first", full,
+			jwt.Expected{Issuer: "x", Subject: "x", AnyAudience: jwt.Audience{"x"}, ID: "x"}, 9999, 0, 0},
+		{"sub before jti before aud", full, jwt.Expected{Subject: "x", AnyAudience: jwt.Audience{"x"}, ID: "x"}, 9999, 0, 0},
+		{"jti before aud", full, jwt.Expected{AnyAudience: jwt.Audience{"x"}, ID: "x"}, 9999, 0, 0},
+		{"aud before the dates", full, jwt.Expected{AnyAudience: jwt.Audience{"x"}}, 9999, 0, 0},
+		{"a second before nbf", timesOnly, jwt.Expected{}, 999, 0, 0},
+		{"a microsecond before nbf", timesOnly, jwt.Expected{}, 999, 999999, 0},
+		{"at nbf", timesOnly, jwt.Expected{}, 1000, 0, 0},
+		{"a second before exp", timesOnly, jwt.Expected{}, 1999, 0, 0},
+		{"a microsecond before exp", timesOnly, jwt.Expected{}, 1999, 999999, 0},
+		{"at the instant of exp", timesOnly, jwt.Expected{}, 2000, 0, 0},
+		{"a microsecond after exp", timesOnly, jwt.Expected{}, 2000, 1, 0},
+		{"a second after exp", timesOnly, jwt.Expected{}, 2001, 0, 0},
+		{"default leeway, 61s before nbf", timesOnly, jwt.Expected{}, 939, 0, 60},
+		{"default leeway, 60s before nbf", timesOnly, jwt.Expected{}, 940, 0, 60},
+		{"default leeway, 59s after exp", timesOnly, jwt.Expected{}, 2059, 0, 60},
+		{"default leeway, at the instant of exp + 60s", timesOnly, jwt.Expected{}, 2060, 0, 60},
+		{"default leeway, 61s after exp", timesOnly, jwt.Expected{}, 2061, 0, 60},
+		{"negative leeway, 9s after nbf", timesOnly, jwt.Expected{}, 1009, 0, -10},
+		{"negative leeway, 10s after nbf", timesOnly, jwt.Expected{}, 1010, 0, -10},
+		{"negative leeway, 11s before exp", timesOnly, jwt.Expected{}, 1989, 0, -10},
+		{"negative leeway, at the instant of exp - 10s", timesOnly, jwt.Expected{}, 1990, 0, -10},
+		{"negative leeway, 9s before exp", timesOnly, jwt.Expected{}, 1991, 0, -10},
+		{"iat a second in the future", jwt.Claims{IssuedAt: date(1000)}, jwt.Expected{}, 999, 0, 0},
+		{"iat in the future within leeway", jwt.Claims{IssuedAt: date(1000)}, jwt.Expected{}, 940, 0, 60},
+		{"nbf reported before exp", jwt.Claims{NotBefore: date(3000), Expiry: date(2000)}, jwt.Expected{}, 2500, 0, 0},
+		{"nbf reported before iat", jwt.Claims{NotBefore: date(3000), Expiry: date(2000), IssuedAt: date(3000)},
+			jwt.Expected{}, 2500, 0, 0},
+		{"exp reported before iat", jwt.Claims{Expiry: date(2000), IssuedAt: date(3000)}, jwt.Expected{}, 2500, 0, 0},
+		{"no dates, long before the epoch", jwt.Claims{}, jwt.Expected{}, -4000000000, 0, 0},
+		{"no dates, far in the future", jwt.Claims{}, jwt.Expected{}, 4000000000, 0, 0},
+		{"before the epoch", jwt.Claims{NotBefore: date(-100), Expiry: date(-50)}, jwt.Expected{}, -75, 500000, 0},
+		// -50.5s: floored to -51 it's before nbf; truncated to -50 it would pass.
+		{"half a second before a pre-epoch nbf", jwt.Claims{NotBefore: date(-50)}, jwt.Expected{}, -51, 500000, 0},
+	}
+	var out []validationCase
+	for _, v := range cases {
+		want := v.want.WithTime(time.Unix(v.at, v.micros*1000))
+		out = append(out, validationCase{
+			Name: v.name, Claims: must(json.Marshal(v.claims)),
+			Expected: expectedClaims{Issuer: v.want.Issuer, Subject: v.want.Subject,
+				AnyAudience: v.want.AnyAudience, ID: v.want.ID},
+			Time: v.at, Nanos: v.micros * 1000, Leeway: v.leeway,
+			Result: validationResult(v.claims.ValidateWithLeeway(want, time.Duration(v.leeway)*time.Second)),
+		})
+	}
+	return out
+}
+
 func generate(path string) error {
 	k := newKeys()
 	file := vectorFile{Producer: goJoseVersion(), JWS: generateJWS(k), JWE: generateJWE(k), JWT: generateJWT(k),
-		JWSIncompatible: generateIncompatibleJWS(k), JWTIncompatible: []jwtVector{}}
+		JWSIncompatible: generateIncompatibleJWS(k), JWTIncompatible: []jwtVector{},
+		JWTValidation: generateValidation()}
 	data, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		return err

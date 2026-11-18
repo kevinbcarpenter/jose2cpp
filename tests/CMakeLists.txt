@@ -15,6 +15,7 @@ add_executable(jose_tests
     test_interop.cpp
     test_jwt.cpp
     test_jwt_claims.cpp
+    test_jwt_validate.cpp
     test_vectors.cpp
     support/test_support.cpp
 )

@@ -10,20 +10,24 @@
 // checked-in file is known to be good.
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "jose/jose.hpp"
 #include "support/test_support.hpp"
 
 #include <openssl/err.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
 using namespace jose;
 using json = nlohmann::json;
 using jose::test::b64;
+using Catch::Matchers::ContainsSubstring;
 
 namespace {
 
@@ -206,6 +210,50 @@ auto check_jwt(const json& v) -> void {
     CHECK(json(registered.audience) == claims.at("aud"));
 }
 
+// go-jose's claims validation, case by case. The only difference is at the
+// instant of expiry: RFC 7519 §4.1.4 says a token is expired "on or after"
+// "exp", go-jose only after it.
+auto check_validation(const json& cases) -> void {
+    const std::set<std::string> expired_here{
+        "at the instant of exp",
+        "default leeway, at the instant of exp + 60s",
+        "negative leeway, at the instant of exp - 10s",
+    };
+    std::set<std::string> differences_seen;
+    for (const auto& v : cases) {
+        const auto name = v.at("name").get<std::string>();
+        INFO("validation case: " << name);
+        const auto claims = must(jwt::decode<jwt::registered_claims>(v.at("claims")), "claims");
+        const auto& e = v.at("expected");
+        jwt::expected_claims want{
+            .any_audience = e.value("aud", jwt::audience{}),
+            .time = std::chrono::system_clock::time_point(
+                std::chrono::seconds(v.at("time").get<std::int64_t>()) +
+                std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                    std::chrono::nanoseconds(v.at("time_nanos").get<std::int64_t>()))),
+        };
+        if (e.contains("iss")) want.issuer = e.at("iss").get<std::string>();
+        if (e.contains("sub")) want.subject = e.at("sub").get<std::string>();
+        if (e.contains("jti")) want.id = e.at("jti").get<std::string>();
+        const auto r = claims.validate(want, std::chrono::seconds(v.at("leeway").get<std::int64_t>()));
+
+        auto go_jose = v.at("result").get<std::string>();
+        if (expired_here.contains(name)) {
+            CHECK(go_jose.empty()); // still a difference, or move the case out of the list
+            differences_seen.insert(name);
+            go_jose = "exp";
+        }
+        if (go_jose.empty()) {
+            INFO((r ? std::string("ok") : r.error().message));
+            CHECK(r.has_value());
+        } else {
+            REQUIRE_FALSE(r.has_value());
+            CHECK_THAT(r.error().message, ContainsSubstring("\"" + go_jose + "\""));
+        }
+    }
+    CHECK(differences_seen == expired_here);
+}
+
 auto check_file(const json& file) -> void {
     size_t jws_count = 0;
     size_t jwe_count = 0;
@@ -231,6 +279,11 @@ auto check_file(const json& file) -> void {
             CHECK_FALSE(jwt_claims(v));
             ERR_clear_error();
         }
+    }
+    if (!own) {
+        REQUIRE(file.contains("jwt_validation"));
+        CHECK(file.at("jwt_validation").size() >= 40);
+        check_validation(file.at("jwt_validation"));
     }
     INFO("producer: " << file.value("producer", "?"));
     CHECK(jws_count > 0);
