@@ -62,6 +62,7 @@ add_library(jose
     src/jws.cpp
     src/jwe.cpp
     src/jwt.cpp
+    src/jwt_claims.cpp
     src/internal/deflate.cpp
     src/internal/codec.cpp
     src/crypto/hmac.cpp

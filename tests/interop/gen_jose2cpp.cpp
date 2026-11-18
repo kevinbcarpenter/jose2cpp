@@ -300,8 +300,29 @@ auto nested_jwt_vector(key_source& keys, key_algorithm alg, content_encryption e
     return v;
 }
 
+// Built from jwt::registered_claims with a single audience, which is
+// written as a plain string.
+auto registered_claims_vector(key_source& keys) -> json {
+    const jwt::registered_claims standard{
+        .issuer = "https://issuer.example",
+        .subject = "kevin",
+        .audience = {"api"},
+        .expiry = jwt::numeric_date::from_seconds(1900000000),
+        .not_before = jwt::numeric_date::from_seconds(1700000000),
+        .issued_at = jwt::numeric_date::from_seconds(1700000000),
+        .id = "cpp-claims-1",
+    };
+    const auto key = signing_key_for(keys, signing_algorithm::ES256);
+    json v{{"name", "signed ES256 registered_claims"}, {"kind", "signed"}, {"claims", json(standard)}};
+    v["signature_algorithms"] = json::array({"ES256"});
+    v["verification_key"] = public_json(key);
+    v["token"] = must(jwt::signed_token({signing_algorithm::ES256, key}).claims(standard).serialize(), v["name"]);
+    return v;
+}
+
 auto generate_jwt(key_source& keys) -> json {
     json out = json::array();
+    out.push_back(registered_claims_vector(keys));
     for (auto alg : {signing_algorithm::HS256, signing_algorithm::RS256, signing_algorithm::PS384,
                      signing_algorithm::ES256, signing_algorithm::ES512, signing_algorithm::EdDSA})
         out.push_back(signed_jwt_vector(keys, alg));

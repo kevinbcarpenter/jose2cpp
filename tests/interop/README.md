@@ -14,7 +14,10 @@ form, plus ECDH-ES on P-384/P-521, DEFLATE, PBES2 at the producer's default
 iteration count, the JSON `aad` member, multiple signatures and five-recipient
 JWE. They also cover JWTs: signed with six algorithms, encrypted with `dir`,
 AES key wrap and AES-GCM key wrap, and nested, each checked down to the
-claims. Consumers verify or decrypt with every listed key and (jose2cpp)
+claims. One JWT each way is built from the library's own claims type
+(go-jose's `jwt.Claims`, jose2cpp's `jwt::registered_claims`) with a single
+audience, which both write as a plain string, and every JWT's claims are also
+read back through the other library's claims type. Consumers verify or decrypt with every listed key and (jose2cpp)
 re-serialize the parsed object, compact byte-for-byte and JSON by value.
 
 Not covered because go-jose doesn't support them: Ed448, and ECDH-ES with

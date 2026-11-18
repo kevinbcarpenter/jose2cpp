@@ -61,6 +61,7 @@
 #include "jose/header.hpp"
 #include "jose/jwe.hpp"
 #include "jose/jws.hpp"
+#include "jose/jwt_claims.hpp"
 
 #include <nlohmann/json.hpp>
 

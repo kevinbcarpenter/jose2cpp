@@ -141,6 +141,28 @@ auto inner  = nested->decrypt(my_private_key);         // the signed JWT inside
 auto verified = inner->claims(their_signing_key);
 ```
 
+For the registered claims there's `jwt::registered_claims`, with
+`jwt::numeric_date` (a `std::chrono` time in whole seconds) and
+`jwt::audience` (one string or a list). They work in the builder, in
+`decode`, and inside your own claims structs:
+
+```cpp
+jose::jwt::registered_claims standard{
+    .issuer = "https://auth.example.com",
+    .subject = "kevin",
+    .audience = {"api"},
+    .expiry = jose::jwt::numeric_date::now() + std::chrono::minutes(15),
+};
+auto token = jose::jwt::signed_token(signer).claims(standard).claims(my_private_claims).serialize();
+
+auto back = jose::jwt::decode<jose::jwt::registered_claims>(*verified);
+if (back && back->audience.contains("api")) { /* ... */ }
+```
+
+A badly formed claim, like `"exp":"tomorrow"` or `"exp":null`, is an error
+rather than "no expiry". That one matters: a parser that shrugs off a bad
+`exp` hands out tokens that never expire.
+
 One rule to know about. A JWT that's only encrypted has no signature, so
 anyone who can encrypt to you can make one. With RSA or ECDH-ES that's anyone
 holding your public key, and PBES2 is only as good as the password. So

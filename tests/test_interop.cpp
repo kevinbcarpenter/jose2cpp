@@ -197,7 +197,13 @@ auto jwt_claims(const json& v) -> expected<json> {
 
 auto check_jwt(const json& v) -> void {
     INFO("JWT " << v.at("name").get<std::string>());
-    CHECK(must(jwt_claims(v), "claims") == v.at("claims"));
+    const auto claims = must(jwt_claims(v), "claims");
+    CHECK(claims == v.at("claims"));
+    // The registered claims read back through jwt::registered_claims too.
+    const auto registered = must(jwt::decode<jwt::registered_claims>(claims), "registered claims");
+    CHECK(registered.subject == claims.at("sub").get<std::string>());
+    CHECK(registered.expiry == jwt::numeric_date::from_seconds(claims.at("exp").get<std::int64_t>()));
+    CHECK(json(registered.audience) == claims.at("aud"));
 }
 
 auto check_file(const json& file) -> void {

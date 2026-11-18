@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
@@ -384,6 +385,23 @@ func generateJWT(k *keys) []jwtVector {
 		})
 	}
 
+	// Built from go-jose's own jwt.Claims, with a single audience, which
+	// jwt.Audience writes as a plain string.
+	{
+		std := jwt.Claims{
+			Issuer: "https://issuer.example", Subject: "kevin", Audience: jwt.Audience{"api"},
+			Expiry: jwt.NewNumericDate(time.Unix(1900000000, 0)), NotBefore: jwt.NewNumericDate(time.Unix(1700000000, 0)),
+			IssuedAt: jwt.NewNumericDate(time.Unix(1700000000, 0)), ID: "go-claims-1",
+		}
+		key := k.signingKey(jose.ES256)
+		signer := must(jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key}, (&jose.SignerOptions{}).WithType("JWT")))
+		out = append(out, jwtVector{
+			Name: "signed ES256 jwt.Claims", Kind: "signed", SignatureAlgorithms: []string{"ES256"},
+			VerificationKey: publicJWK(key), Claims: must(json.Marshal(std)),
+			Token: must(jwt.Signed(signer).Claims(std).Serialize()),
+		})
+	}
+
 	type encCase struct {
 		alg jose.KeyAlgorithm
 		enc jose.ContentEncryption
@@ -599,6 +617,18 @@ func verifyJWT(v jwtVector) error {
 	}
 	if !reflect.DeepEqual(got, want) {
 		return fmt.Errorf("claims mismatch: got %v, want %v", got, want)
+	}
+	// The registered claims must also read through go-jose's jwt.Claims
+	// (its Audience and NumericDate types).
+	var std jwt.Claims
+	if err := json.Unmarshal(v.Claims, &std); err != nil {
+		return fmt.Errorf("jwt.Claims: %w", err)
+	}
+	if want["sub"] != nil && std.Subject != want["sub"] {
+		return fmt.Errorf("jwt.Claims subject %q, want %v", std.Subject, want["sub"])
+	}
+	if exp, ok := want["exp"].(float64); ok && (std.Expiry == nil || std.Expiry.Time().Unix() != int64(exp)) {
+		return fmt.Errorf("jwt.Claims expiry %v, want %v", std.Expiry, exp)
 	}
 	return nil
 }
