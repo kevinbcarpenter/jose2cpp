@@ -15,10 +15,17 @@
 
 namespace jose::internal {
 
+// The deepest nesting of objects and arrays parse_json_strict accepts.
+// Copying, serializing and converting nlohmann::json recurses, so a token
+// nested tens of thousands of levels deep (a few tens of KB) would overflow
+// the stack; nothing in a JOSE header, JWK or claims set comes close to it.
+inline constexpr int max_json_depth = 128;
+
 // Parse JSON text, rejecting duplicate member names in any object (RFC 7515
 // §4, RFC 7516 §4, RFC 7517 §4 allow either rejecting duplicates or keeping
 // the last one; rejecting removes any ambiguity between parsers). `what`
 // names the document in error messages ("JWK", "JOSE header", ...).
+// Nesting deeper than max_json_depth is errc::serialization_error.
 auto parse_json_strict(std::string_view text, std::string_view what) -> expected<nlohmann::json>;
 
 // Strips leading and trailing JSON whitespace (space, tab, CR, LF) from a

@@ -192,3 +192,53 @@ TEST_CASE("limits: PBKDF2 iterations per decrypt", "[limits][jwe][pbes2]") {
         CHECK(error_of(r) == errc::invalid_header);
     }
 }
+
+namespace {
+
+auto nested(std::size_t n) -> std::string { return std::string(n, '[') + std::string(n, ']'); }
+
+auto b64(std::string_view s) -> std::string { return base64url::encode(s); }
+
+auto is_too_deep(const auto& r) -> bool {
+    return !r.has_value() && r.error().code == errc::serialization_error &&
+           r.error().message.find("nested more than 128 levels") != std::string::npos;
+}
+
+} // namespace
+
+TEST_CASE("limits: JSON nesting depth", "[limits][json]") {
+    SECTION("128 levels below the top are accepted, 129 aren't") {
+        const auto key = [](std::size_t n) {
+            return jwk::from_json(std::string_view(R"({"kty":"oct","k":"AAAAAAAAAAAAAAAAAAAAAA","x":)" + nested(n) + "}"));
+        };
+        CHECK(key(128));
+        CHECK(is_too_deep(key(129)));
+    }
+    SECTION("tokens nested 20,000 levels deep are refused, not a stack overflow") {
+        // About 40 KB each. Before the limit, copying the unprotected header
+        // overflowed the stack under ASan (found by the fuzz review).
+        const auto deep = nested(20000);
+        const auto protected_hs256 = b64(R"({"alg":"HS256"})");
+        CHECK(is_too_deep(jws::parse(R"({"payload":"","protected":")" + protected_hs256 + R"(","header":{"x":)" +
+                                         deep + R"(},"signature":""})",
+                                     {signing_algorithm::HS256})));
+        CHECK(is_too_deep(jwe::parse(R"({"protected":")" + b64(R"({"enc":"A128GCM"})") +
+                                         R"(","unprotected":{"x":)" + deep +
+                                         R"(},"header":{"alg":"dir"},"iv":"","ciphertext":"","tag":""})",
+                                     {key_algorithm::dir}, {content_encryption::A128GCM})));
+        // In a protected header, through base64url.
+        CHECK(is_too_deep(jws::parse(b64(R"({"alg":"HS256","x":)" + deep + "}") + ".e30.", {signing_algorithm::HS256})));
+        CHECK(is_too_deep(jwk::from_json(std::string_view(R"({"kty":"oct","k":"AAAA","x":)" + deep + "}"))));
+        CHECK(is_too_deep(jwk_set::from_json(std::string_view(R"({"keys":[],"x":)" + deep + "}"))));
+
+        // JWT claims: parsed after the signature verifies.
+        auto key = jwk::generate_oct(32);
+        REQUIRE(key);
+        auto token = jws::sign(R"({"x":)" + deep + "}", {signing_algorithm::HS256, *key});
+        REQUIRE(token);
+        auto parsed = jwt::parse_signed(*token->compact(), {signing_algorithm::HS256});
+        REQUIRE(parsed);
+        CHECK(is_too_deep(parsed->claims(*key)));
+        CHECK(is_too_deep(parsed->unsafe_claims()));
+    }
+}

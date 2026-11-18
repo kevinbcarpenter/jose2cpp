@@ -111,7 +111,9 @@ pile of PBES2 recipients costs you at most 1,000,000 iterations in total,
 about one maximum-cost run, not one run per recipient. That fits three
 recipients at our default `p2c` of 310,000 but only one at go-jose's 600,000,
 so raise it if you expect tokens with several PBES2 recipients, or set it to 0
-if you never use PBES2.
+if you never use PBES2. JSON anywhere in a token, key or claims set can be
+nested at most 128 levels deep, because a few tens of KB of brackets would
+otherwise overflow the stack.
 
 Compact tokens, signed or encrypted, can have whitespace at either end, so
 one read from a file with a trailing newline still parses. Whitespace inside
