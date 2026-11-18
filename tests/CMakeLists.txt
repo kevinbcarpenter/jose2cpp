@@ -17,11 +17,13 @@ add_executable(jose_tests
     test_jwt_claims.cpp
     test_jwt_validate.cpp
     test_jwks_fetcher.cpp
+    test_cli.cpp
+    ${PROJECT_SOURCE_DIR}/tools/cli.cpp
     test_vectors.cpp
     support/test_support.cpp
 )
 
-target_include_directories(jose_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(jose_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${PROJECT_SOURCE_DIR}/tools)
 target_compile_definitions(jose_tests PRIVATE
     JOSE_TEST_VECTORS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/vectors"
 )
@@ -31,6 +33,14 @@ target_link_libraries(jose_tests PRIVATE jose Catch2::Catch2WithMain)
 include(CTest)
 include(Catch)
 catch_discover_tests(jose_tests)
+
+# The jose-cli binary itself (its commands are tested in-process by test_cli.cpp).
+if(JOSE_BUILD_CLI)
+    add_test(NAME cli.help COMMAND jose_cli --help)
+    add_test(NAME cli.usage_error
+             COMMAND ${CMAKE_COMMAND} -DCMD=$<TARGET_FILE:jose_cli> -DARGS=frobnicate -DEXPECT=2
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/check_exit.cmake)
+endif()
 
 # --- go-jose interoperability (PLAN.md Phase 2 item 11) -------------------
 #
@@ -70,6 +80,21 @@ if(JOSE_INTEROP_GO)
              COMMAND ${GO_EXECUTABLE} run . verify ${CMAKE_CURRENT_SOURCE_DIR}/vectors/interop/jose2cpp.json
              WORKING_DIRECTORY ${_go_dir})
     set_tests_properties(interop.go_jose_verifies_checked_in PROPERTIES ENVIRONMENT "GOFLAGS=-mod=readonly")
+
+    # jose-cli against go-jose's own jose-util, built from the pinned module.
+    if(JOSE_BUILD_CLI)
+        add_test(NAME interop.build_jose_util
+                 COMMAND ${GO_EXECUTABLE} build -o ${_fresh}/jose-util${CMAKE_EXECUTABLE_SUFFIX}
+                         github.com/go-jose/go-jose/v4/jose-util
+                 WORKING_DIRECTORY ${_go_dir})
+        set_tests_properties(interop.build_jose_util PROPERTIES
+            FIXTURES_SETUP jose_util ENVIRONMENT "GOFLAGS=-mod=readonly")
+        add_test(NAME interop.cli_vs_jose_util
+                 COMMAND ${CMAKE_COMMAND} -DJOSE_CLI=$<TARGET_FILE:jose_cli>
+                         -DJOSE_UTIL=${_fresh}/jose-util${CMAKE_EXECUTABLE_SUFFIX} -DWORK=${_fresh}/cli
+                         -P ${CMAKE_CURRENT_SOURCE_DIR}/interop/cli_interop.cmake)
+        set_tests_properties(interop.cli_vs_jose_util PROPERTIES FIXTURES_REQUIRED jose_util)
+    endif()
 
     # `cmake --build <dir> --target interop_vectors` refreshes the checked-in files.
     add_custom_target(interop_vectors

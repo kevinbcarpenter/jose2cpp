@@ -122,6 +122,15 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+# jose-cli (PLAN.md Phase 3 item 8). The commands are in tools/cli.cpp so the
+# tests can run them in-process.
+if(JOSE_BUILD_CLI)
+    add_executable(jose_cli tools/jose_cli.cpp tools/cli.cpp)
+    set_target_properties(jose_cli PROPERTIES OUTPUT_NAME jose-cli)
+    target_link_libraries(jose_cli PRIVATE jose)
+    install(TARGETS jose_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
 install(TARGETS jose EXPORT joseTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}

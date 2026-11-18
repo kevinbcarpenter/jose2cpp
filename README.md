@@ -303,6 +303,53 @@ with them, and a private key is cut down to its public half. URLs have to be
 certificates, because the keys are only as good as the connection that
 brought them.
 
+### Command line
+
+`jose-cli` does from a shell what the library does from code. It takes the
+same commands and flags as go-jose's `jose-util`, so a `jose-util` command
+line usually works unchanged; the exceptions are at the end of this section.
+Build it with `-DJOSE_BUILD_CLI=ON`.
+
+```sh
+jose-cli generate-key --use sig --alg ES256 --kid demo     # writes jwk-sig-demo-{priv,pub}.json
+echo "hello" | jose-cli sign --key jwk-sig-demo-priv.json | jose-cli verify --key jwk-sig-demo-pub.json
+
+jose-cli encrypt --key public.pem --alg RSA-OAEP --enc A128GCM --in plain.txt --out token.jwe
+jose-cli decrypt --key private.pem --in token.jwe
+
+jose-cli expand < token.jws                                # compact to JSON, nothing checked
+```
+
+The commands are `sign`, `verify`, `encrypt`, `decrypt`, `expand` and
+`generate-key`, and `jose-cli COMMAND --help` lists each one's flags. Keys can
+be PEM, DER or JWK, as with `jose-util`, and `verify` and `decrypt` also take a
+JWK Set and try each key in it. A few things go past `jose-util`:
+
+- `verify` and `decrypt` only succeed with algorithms the key can actually be
+  used with, so an RSA key never verifies an HS256 token. `--alg` (and `--enc`
+  for `decrypt`) limits it to the algorithms you list.
+- `--alg` defaults to the key's own `alg`, and `encrypt --zip` compresses.
+- `generate-key` also makes symmetric keys (HS*, A*KW, A*GCMKW, `dir`) and,
+  with `--crv`, Ed448, X25519 and X448 keys. It never overwrites a file, and
+  on Linux and macOS the private key file is readable only by you. On Windows
+  it's only marked read-only and gets the folder's permissions, so put it
+  somewhere private.
+- RSA1_5 needs `--allow-legacy` on both `encrypt` and `decrypt`.
+
+Tokens come out with a trailing newline; payloads and plaintexts come out
+exactly as they went in. `decrypt --out` creates a new file readable only by
+you (on Linux and macOS). The exit status is 0 on success, 1 when the
+operation fails (a bad signature, the wrong key, an unreadable file) and 2 for
+a bad command line.
+
+Where a `jose-util` command line won't work as is: giving a flag like `--key`
+twice is an error rather than "the last one wins", an argument that isn't a
+flag is an error rather than ignored, and `generate-key` swaps characters
+other than letters, digits, `.`, `-` and `_` in a `--kid` for `_` in the file
+names (the key's `kid` itself is kept).
+With `-DJOSE_INTEROP_GO=ON`, ctest also builds go-jose's `jose-util` and
+checks that each tool reads what the other writes.
+
 ### Coroutines (`jose::task`)
 
 `jose/task.hpp` is a small header-only coroutine type for the I/O-bound
@@ -432,7 +479,7 @@ or use the **vcpkg** option above to get Catch2 3.x. OpenSSL 3 and nlohmann-json
 | ------------------- | ------- | ------------------------------------ |
 | `JOSE_BUILD_TESTS`  | `ON`    | Build the Catch2 test suite          |
 | `JOSE_BUILD_BENCH`  | `OFF`   | Build benchmarks                     |
-| `JOSE_BUILD_CLI`    | `OFF`   | Build the CLI tool                   |
+| `JOSE_BUILD_CLI`    | `OFF`   | Build `jose-cli` (see [Command line](#command-line)) |
 | `JOSE_FUZZ`         | `OFF`   | Build fuzz targets (needs libFuzzer) |
 | `JOSE_INTEROP_GO`   | `OFF`   | Add live go-jose interop tests to ctest (needs Go; see [tests/interop](tests/interop/README.md)) |
 | `JOSE_USE_STD_EXPECTED` | `AUTO` | `jose::expected` implementation: `AUTO` probes for C++23 `std::expected` and falls back to the vendored [expected-lite](https://github.com/martinmoene/expected-lite) on C++20; `ON`/`OFF` force one. The choice is exported as a public compile definition so consumers always match the library build. |

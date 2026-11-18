@@ -28,7 +28,7 @@ jobs:
           cache-dependency-path: tests/interop/go/go.sum
 
       - name: Configure
-        run: cmake --preset system -DJOSE_INTEROP_GO=ON
+        run: cmake --preset system -DJOSE_INTEROP_GO=ON -DJOSE_BUILD_CLI=ON
 
       - name: Build
         run: cmake --build --preset system
