@@ -37,7 +37,8 @@ jose2cpp/
 │       ├── jwe.hpp               # JWE encrypt/decrypt/parse
 │       ├── jwt.hpp               # JWT builder/parser/validator
 │       ├── header.hpp            # JOSE header types
-│       ├── async.hpp             # task<T>, async opaque interfaces
+│       ├── task.hpp              # task<T>, sync_wait (header-only)
+│       ├── async.hpp             # async opaque interfaces
 │       └── crypto/
 │           ├── signing.hpp          # unified sign/verify (all JWS algs)
 │           ├── encryption.hpp       # unified encrypt/decrypt (all JWE enc algs)
@@ -401,7 +402,7 @@ Wire the crypto primitives into the JOSE object model.
 6. ✅ `jwe` — encrypt, decrypt; compact, flattened JSON, and general JSON serializations; multi-recipient; DEFLATE compression (see §JWE)
 7. ✅ Unencoded payload option (RFC 7797, `b64` header)
 8. ✅ Opaque signer/verifier/decrypter interfaces — sync variants (see §Opaque Keys); the async variants come with items 9–10
-9. `task<T>` coroutine return type (header-only, zero-dependency)
+9. ✅ `task<T>` coroutine return type (header-only, zero-dependency; see §task)
 10. Async-aware JWS/JWE overloads that accept `async_opaque_signer` / `async_opaque_key_decrypter`
 11. Interop tests: generate test vectors with go-jose (Go toolchain in CI), consume in jose2cpp and vice versa; vectors checked into `tests/vectors/`
 
@@ -577,6 +578,17 @@ Implementation notes for Phase 2 item 8 (`include/jose/opaque.hpp`), following g
 - **Signature-size check.** An `ES*` signature from an opaque signer must be exactly R || S (64/96/132 octets); a DER signature, which most HSMs and KMSs return, is caught with a message saying so.
 - **RSA1_5** still needs `legacy_options::allow_rsa1_5`, checked before the decrypter is called. The constant-time countermeasure can't be applied inside someone else's code, so the interface documents that the decrypter must not reveal padding failures.
 - **No opaque key encrypter.** Encryption uses public keys (or a CEK/KEK the caller already holds), so there is no KMS case for it yet; go-jose's `OpaqueKeyEncrypter` can't be implemented outside its package either.
+
+## task
+
+Implementation notes for Phase 2 item 9 (`include/jose/task.hpp`, header-only, standard library only):
+
+- **`task<T>`** is lazy (the body runs when first awaited), move-only and single-consumer (`co_await` moves the result out). `T` may be `void` or any non-reference object type, including ones without a default constructor such as `expected<jwk>`; results live in a union. Discarding an unawaited task destroys its frame without running it.
+- **No scheduler.** A task runs on the thread that awaits it, and the awaiter resumes on whichever thread the task finishes on. Executors, thread pools and cancellation belong to the application's async framework; `task` only has to compose with it, and any awaitable can be `co_await`ed inside one.
+- **Constant stack for loops without symmetric transfer.** Symmetric transfer relies on the compiler emitting a tail call, which GCC doesn't do at `-O0` or under ASan: a loop of a million synchronous `co_await`s overflowed the stack there. Instead the awaiter resumes the task directly and an atomic flag (set by both sides at the hand-off; acq_rel) decides who continues, as in pre-symmetric-transfer cppcoro: a task that completed synchronously returns into `await_suspend`, which declines to suspend. Cost: one atomic exchange per `co_await`. Recursion through `co_await` uses stack like ordinary recursion.
+- **`sync_wait(task)`** drives a task from non-coroutine code, blocking on a mutex/condition variable until it finishes on any thread, and returns the value or rethrows. (A mutex rather than `std::binary_semaphore` / `atomic::wait`, which need macOS 11+ in libc++.)
+- **Exceptions** escaping a task body are rethrown by `co_await` / `sync_wait`. With `-fno-exceptions` the header compiles and `unhandled_exception` terminates.
+- **Verified** with Apple Clang 21 (`-O0`, `-O2`, ASan+UBSan, TSan, `-fno-exceptions`) and GCC 16 (`-O0`, `-O2`, ASan+UBSan, `-fno-exceptions`), including resumption from another thread. GCC 10 would need `-fcoroutines`; GCC 11+ enables coroutines with `-std=c++20`.
 
 ## Key Validation
 

@@ -126,6 +126,22 @@ backend outages as `errc::key_unavailable`, which is passed through; any other
 verifier error becomes `errc::invalid_signature`, and any other decrypter
 error the uniform `errc::decryption_failed`.
 
+### Coroutines (`jose::task`)
+
+`jose/task.hpp` is a small header-only coroutine type for the I/O-bound
+extension points (async HSM/KMS signers and decrypters, JWKS fetching). It is
+lazy, move-only and has no scheduler of its own, so it composes with whatever
+event loop the application uses; `sync_wait` runs one from plain code:
+
+```cpp
+auto fetch_key(kms_client& kms) -> jose::task<jose::expected<jose::jwk>> {
+    auto pem = co_await kms.get_public_key();   // any awaitable
+    co_return jose::jwk::from_pem(pem);
+}
+
+auto key = jose::sync_wait(fetch_key(kms));      // blocks until done
+```
+
 ### JOSE headers
 
 `jose::header` parses and type-checks a JOSE header; `jose::join_headers`

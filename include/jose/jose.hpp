@@ -16,6 +16,7 @@
 #include "jose/jws.hpp"
 #include "jose/opaque.hpp"
 #include "jose/secure_bytes.hpp"
+#include "jose/task.hpp"
 #include "jose/version.hpp"
 
 #include "jose/crypto/encryption.hpp"
