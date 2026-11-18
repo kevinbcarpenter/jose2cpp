@@ -18,6 +18,7 @@ add_executable(jose_tests
     test_jwt_validate.cpp
     test_jwks_fetcher.cpp
     test_cli.cpp
+    test_limits.cpp
     ${PROJECT_SOURCE_DIR}/tools/cli.cpp
     test_vectors.cpp
     support/test_support.cpp

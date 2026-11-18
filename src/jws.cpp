@@ -227,6 +227,8 @@ auto jws::unsigned_jws(std::span<const uint8_t> payload, bool b64) -> jws {
 auto jws::sign(std::span<const uint8_t> payload, std::span<const jws_signer> signers,
                const jws_sign_options& options) -> expected<jws> {
     if (signers.empty()) return bad_argument("JWS needs at least one signer");
+    if (signers.size() > max_signatures)
+        return bad_argument("JWS can have at most " + std::to_string(max_signatures) + " signatures");
     jws out = unsigned_jws(payload, options.b64);
 
     for (const auto& signer : signers) {
@@ -282,6 +284,8 @@ auto jws::sign_async(std::string_view payload, const jws_signer& signer, const j
 auto jws::sign_async(std::vector<uint8_t> payload, std::vector<jws_signer> signers, jws_sign_options options)
     -> task<expected<jws>> {
     if (signers.empty()) co_return bad_argument("JWS needs at least one signer");
+    if (signers.size() > max_signatures)
+        co_return bad_argument("JWS can have at most " + std::to_string(max_signatures) + " signatures");
     jws out = unsigned_jws(payload, options.b64);
 
     for (const auto& signer : signers) {
@@ -433,6 +437,9 @@ auto jws::from_json_value(const json& j, const std::vector<signing_algorithm>& a
             return bad_token("JWS JSON mixes general and flattened serialization members");
         if (!sigs->is_array() || sigs->empty())
             return bad_token("JWS \"signatures\" must be a non-empty array");
+        if (sigs->size() > max_signatures)
+            return bad_token("JWS has " + std::to_string(sigs->size()) + " signatures; at most " +
+                             std::to_string(max_signatures) + " are accepted");
         for (const auto& s : *sigs) {
             if (!s.is_object()) return bad_token("JWS \"signatures\" entries must be objects");
             entries.push_back(&s);

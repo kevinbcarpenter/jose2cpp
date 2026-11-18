@@ -70,6 +70,18 @@ struct jwe_decrypt_options {
     // Cap on decompressed ("zip":"DEF") plaintext; 0 means
     // max(250 KiB, 10 x the compressed size), as go-jose v4.
     size_t max_decompressed_size = 0;
+    // The PBKDF2 iterations (the "p2c" of each PBES2 recipient) one decrypt
+    // call with a jwk or jwk_set may spend in total, across every recipient
+    // and key it tries; opaque decrypters do their own unwrap and aren't
+    // counted. A token's "p2c" is chosen by whoever made it, so without a
+    // total a JSON JWE listing many PBES2 recipients costs a full PBKDF2 run
+    // for each. The default is the largest "p2c" accepted (1,000,000): one
+    // attempt at that, or three at jose2cpp's default of 310,000, but only
+    // one at go-jose's default of 600,000, so raise it if you expect tokens
+    // with several PBES2 recipients. 0 refuses PBES2. Running out is
+    // errc::invalid_header and ends the call: the remaining recipients
+    // aren't tried.
+    std::uint64_t max_pbes2_iterations = 1000000;
 };
 
 // One recipient of a JWE, as encrypted or parsed.
@@ -87,6 +99,12 @@ enum class jwe_json_format {
 
 class jwe {
 public:
+    // The most recipients a JWE may have, when parsed or produced, as
+    // go-jose's MaxRecipients: each one can mean a key unwrap for the
+    // decrypter. More is errc::invalid_token when parsing and
+    // errc::invalid_argument when encrypting.
+    static constexpr std::size_t max_recipients = 32;
+
     // --- Producing ---
 
     static auto encrypt(std::span<const uint8_t> plaintext, content_encryption enc,
@@ -190,8 +208,13 @@ private:
                        const std::vector<content_encryption>& encryptions, const extension_set& understood)
         -> expected<void>;
     auto authenticated_data() const -> std::vector<uint8_t>;
-    auto recover_cek(const jwe_recipient_info& r, const jwk& key, const jwe_decrypt_options& options) const
-        -> expected<secure_bytes>;
+    // What's left of jwe_decrypt_options::max_pbes2_iterations in one call.
+    struct pbes2_budget {
+        std::uint64_t left;
+        bool exhausted = false;
+    };
+    auto recover_cek(const jwe_recipient_info& r, const jwk& key, const jwe_decrypt_options& options,
+                     pbes2_budget& budget) const -> expected<secure_bytes>;
     auto recover_cek(const jwe_recipient_info& r, opaque_key_decrypter& decrypter,
                      const jwe_decrypt_options& options) const -> expected<secure_bytes>;
     auto recover_cek_async(const jwe_recipient_info& r, async_opaque_key_decrypter& decrypter,

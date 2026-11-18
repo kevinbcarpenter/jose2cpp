@@ -83,6 +83,12 @@ enum class jws_json_format {
 
 class jws {
 public:
+    // The most signatures a JWS may have, when parsed or produced, as
+    // go-jose's MaxSignatures: each one can mean a verification. More is
+    // errc::invalid_token when parsing and errc::invalid_argument when
+    // signing.
+    static constexpr std::size_t max_signatures = 32;
+
     // --- Producing ---
 
     static auto sign(std::span<const uint8_t> payload, const jws_signer& signer,

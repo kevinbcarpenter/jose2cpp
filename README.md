@@ -101,6 +101,18 @@ auto parsed = jose::jwe::parse(*token, {jose::key_algorithm::ECDH_ES_A256KW},
 auto opened = parsed->decrypt(key);    // expected<secure_bytes>
 ```
 
+A token decides how much work it asks for, so there are limits. A JWE can
+have at most 32 recipients and a JWS at most 32 signatures, the same caps
+go-jose uses. PBES2 is the expensive one: each recipient's `p2c` is a PBKDF2
+iteration count, capped at 1,000,000, and on top of that one decrypt call
+spends at most `jwe_decrypt_options::max_pbes2_iterations` (1,000,000 by
+default) across every recipient and key it tries. So a JSON JWE listing a
+pile of PBES2 recipients costs you at most 1,000,000 iterations in total,
+about one maximum-cost run, not one run per recipient. That fits three
+recipients at our default `p2c` of 310,000 but only one at go-jose's 600,000,
+so raise it if you expect tokens with several PBES2 recipients, or set it to 0
+if you never use PBES2.
+
 Compact tokens, signed or encrypted, can have whitespace at either end, so
 one read from a file with a trailing newline still parses. Whitespace inside
 the token is an error, because the RFCs don't allow it and it would let the
