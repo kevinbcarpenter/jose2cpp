@@ -261,6 +261,48 @@ the task runs. Only the verifier or decrypter you pass by reference has to
 outlive it. The sync `serialize()` refuses an async signer and tells you to
 use `serialize_async()`.
 
+### Keys from a JWKS URL
+
+Most identity providers publish their signing keys as a JWK Set at a URL, and
+`jose::optional::jwks_fetcher` (`jose/optional/jwks_fetcher.hpp`) keeps a copy
+of it cached and refreshed for you. It isn't in `jose.hpp`, and it doesn't pull
+in an HTTP library. You write the transport, a single `get()`, on top of
+whatever client you already have:
+
+```cpp
+struct my_http final : jose::optional::http_client {
+    auto get(jose::optional::http_request request)
+        -> jose::task<jose::expected<jose::optional::http_response>> override;
+        // GET request.url over TLS; honour request.timeout and request.max_response_bytes
+};
+
+jose::optional::jwks_fetcher fetcher({.url = "https://auth.example.com/.well-known/jwks.json"},
+                                     std::make_unique<my_http>());
+
+auto parsed = jose::jwt::parse_signed(token, {jose::signing_algorithm::RS256});
+auto kid = parsed->header().kid();
+auto keys = co_await fetcher.keys_for(std::string(*kid));
+auto claims = parsed->claims(**keys);
+```
+
+`keys()` serves the cached set until it's `refresh_interval` old (five minutes
+by default). `keys_for(kid)` also fetches when no key has that `kid`, which is
+how a key the provider just rotated in gets picked up. Fetches start at most
+once per `min_refresh_interval` (30 seconds) no matter who asks, so a flood of
+tokens with made-up `kid`s can't turn into a flood of requests to your
+provider. While a fetch is running, other callers that need one wait for it
+instead of starting their own.
+
+When a fetch fails, the old set is still served for `max_stale` (an hour)
+past `refresh_interval`, and after that callers get the error. A key the
+provider has withdrawn is still accepted during that hour, so keep `max_stale`
+as short as your provider's uptime lets you. Only public keys are kept:
+symmetric keys are dropped, because anyone who can read the URL could sign
+with them, and a private key is cut down to its public half. URLs have to be
+`https://` unless you set `allow_http`, and your `http_client` has to check
+certificates, because the keys are only as good as the connection that
+brought them.
+
 ### Coroutines (`jose::task`)
 
 `jose/task.hpp` is a small header-only coroutine type for the I/O-bound

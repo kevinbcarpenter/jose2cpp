@@ -363,7 +363,7 @@ namespace jose::optional {
 }
 ```
 
-This avoids baking in an HTTP dependency (no curl, no Boost.Beast in core) while giving users a clean integration point. The fetcher handles caching, TTL-based refresh, and thread-safe key rotation.
+This avoids baking in an HTTP dependency (no curl, no Boost.Beast in core) while giving users a clean integration point. The fetcher handles caching, TTL-based refresh, and thread-safe key rotation. (The sketch above is the original plan; §JWKS Fetcher has what was built and why it differs.)
 
 ---
 
@@ -417,7 +417,7 @@ High-level JWT API and production readiness.
 4. ✅ `Audience` type (single string or array, flexible parse) (see §JWT)
 5. ✅ Claim validation with leeway (see §JWT)
 6. ✅ Signed-then-encrypted JWT (`cty: "JWT"` handling) on the parse side; building nested tokens is item 1 (see §JWT)
-7. Optional async JWKS URL fetcher with pluggable HTTP backend, caching, TTL refresh
+7. ✅ Optional async JWKS URL fetcher with pluggable HTTP backend, caching, TTL refresh (see §JWKS Fetcher)
 8. CLI tool (`jose-cli`) — sign, verify, encrypt, decrypt, generate-key
 9. Fuzz targets (libFuzzer): `jwk::from_json`, `jws::parse`, `jwe::parse`, `jwt::parse_signed` (see §Fuzz Testing)
 10. API documentation (Doxygen)
@@ -433,7 +433,7 @@ High-level JWT API and production readiness.
 3. **Avoid redundant allocations** — pre-size buffers based on algorithm output sizes
 4. **`std::expected` over exceptions** — no exception overhead on error paths
 5. **Header-only option** — consider offering a header-only mode for the non-crypto parts (serialization, claims)
-6. **Thread safety** — all operations are stateless; keys are immutable after construction. `jwks_fetcher` uses `atomic<shared_ptr<jwk_set>>` swap for lock-free concurrent reads during key rotation
+6. **Thread safety** — all operations are stateless; keys are immutable after construction. `jwks_fetcher` swaps in each new set as a `shared_ptr<const jwk_set>` under a mutex held only for the swap or a pointer copy (libc++ has no `atomic<shared_ptr>`), so a set a caller holds stays valid through rotation
 
 ---
 
@@ -637,6 +637,20 @@ Implementation notes for Phase 3 (`include/jose/jwt.hpp`, namespace `jose::jwt`)
   - Differences from go-jose: a token is expired at exactly `exp` + leeway (RFC 7519 §4.1.4, "on or after"), where go-jose still accepts it; and an empty-string expectation is checked, where go-jose reads `""` as "don't check".
   - Interop: go-jose generates 40 validation cases (`jwt_validation` in `gojose.json`) with its own answers, covering each claim, the check order (iat after nbf and exp included), the second and microsecond either side of `nbf` and `exp`, default and negative leeway, `iat` in the future and times before the epoch, including one that only passes if the time is floored rather than truncated. jose2cpp must give the same answer for each, except the three cases at the instant of expiry, which are listed and must still differ.
 - **Headers.** `"typ":"JWT"` is set on every token unless the caller sets `typ` in any header part. go-jose leaves `typ` to the caller. RFC 7519 §5.1 recommends "JWT" for generic tokens; RFC 8725 §3.11 recommends an application-specific type (e.g. `at+jwt`) where one exists, which the caller can still set. A nested token's JWE gets `"cty":"JWT"` (RFC 7519 §5.2); go-jose makes the caller set it and fails otherwise, jose2cpp sets it and refuses a different value. JWTs are compact with a base64url payload, so `b64=false` is refused.
+
+## JWKS Fetcher
+
+Implementation notes for Phase 3 item 7 (`include/jose/optional/jwks_fetcher.hpp`, `src/optional/jwks_fetcher.cpp`). go-jose has no fetcher, so there's nothing to match; the closest Go code is `jwx`'s `jwk.Cache` and `keyfunc`.
+
+- **Opt-in by include.** It's compiled into `jose` (it needs nothing beyond what the library already links) but not included by `jose.hpp`. No HTTP library: callers implement `http_client::get(http_request) -> task<expected<http_response>>`. The request carries the URL, `timeout` and `max_response_bytes`, so a transport can enforce both; the fetcher re-checks the size but can't enforce a timeout without a timer. The request is passed by value, because `task` is lazy and a reference could dangle.
+- **API, changed from the sketch.** `keys()`, `keys_for(kid)`, `refresh()` and `cached()`, each returning `shared_ptr<const jwk_set>`. The sketch's `get_cached()` returned a `reference_wrapper`, which would dangle the moment a refresh swapped the set. `keys_for` exists because a token's `kid` missing from the set is the usual sign of rotation. `max_cache_size` became `max_keys` (the most entries in `"keys"`), since there's one URL and one set to cache. An invalid config, or a null client, comes back from every call as `errc::invalid_argument` instead of from the constructor, as builder errors do.
+- **When it fetches.** `keys()` fetches when the set is `refresh_interval` old (300 s) or missing; `keys_for` also fetches once when the `kid` isn't found; `refresh()` fetches on request. Every fetch is subject to `min_refresh_interval` (30 s, at most `refresh_interval`) since the last one started, success or not, so made-up `kid`s and a dead endpoint both get at most one request per interval. Single flight: callers that need a fetch while one is running wait for it (a waiter list resumed in order by whichever thread finishes the fetch), so `http_client` never sees two requests at once. `keys()` with a set still within `max_stale` never waits for another caller's fetch; it returns that set. (It does wait for a fetch it starts itself.)
+- **Failures.** The old set is kept and served until it's `refresh_interval + max_stale` old (`max_stale` 3600 s), then callers get the last error. This trades availability against how long a withdrawn key stays trusted; `max_stale = 0` turns it off. Status other than 200 is `errc::key_unavailable`; a body that's too large, isn't strict JSON (duplicate members refused), has more than `max_keys` entries, or leaves no public key is `errc::invalid_key`; `http_client` errors pass through. The age of a set counts from when its fetch started.
+- **Only public keys.** `oct` keys are dropped (a symmetric key at a public URL lets anyone sign; with HS* in a caller's allowlist that would be a forgery), private keys are reduced to `public_key()`, and keys `jwk_set::from_json` skips are dropped. The dropped keys' reasons aren't exposed.
+- **HTTPS.** The URL must be `https://` (case-insensitive) unless `allow_http`; certificate checking is the transport's job and the header says so. HTTP caching headers are ignored.
+- **Abandoned fetches.** The fetch is started and its guard created in one critical section, so nothing can throw in between and leave `in_flight` set. If `http_client` throws, the fetch is ended in a `catch` and the exception rethrown to the caller that started it; if the fetching task is destroyed while suspended, the guard's destructor ends it. Either way waiters get what `keys()` would without a fetch (the old set within `max_stale`, else `errc::key_unavailable`), the error is recorded and throttling applies. A waiting task that's destroyed takes itself off the list; waiters are released one at a time and only those of the fetch that finished, so a continuation that destroys another waiter or starts the next fetch is safe. Destroying a waiting task from another thread while a fetch is finishing isn't (no coroutine can be destroyed while someone else resumes it), and the header says so. The header also tells `http_client` authors that `get()`'s task may be destroyed mid-request and that `get()` can be re-entered from the previous completion. `refresh()` returns the old set rather than the error when a fetch fails within `max_stale`.
+- **Durations** are limited to ten years so ages and sums can't overflow the clock's nanoseconds. A `clock` function in the config replaces `steady_clock::now` in tests.
+- **Tests** (`tests/test_jwks_fetcher.cpp`): config checks, caching and throttling against a fake clock, every response rule, max_stale edges to the nanosecond, rate-limited `keys_for` with 100 forged `kid`s, single flight with parked requests (cold start, failure, stale set, abandoned fetch, an exception before and after suspending, waiter order, a destroyed waiter, and a waiter whose continuation starts the next fetch while the first's waiters are still being released), a JWT verified through the fetcher across a rotation, and eight threads mixing calls against a client that finishes each request on a new thread. Clean under ASan+UBSan and TSan.
 
 ## Compact whitespace
 

@@ -78,6 +78,8 @@ add_library(jose
     src/crypto/encryption.cpp
     src/crypto/ecdh.cpp
     src/crypto/pbes2.cpp
+    # Opt-in by include (jose/optional/jwks_fetcher.hpp); no extra dependencies.
+    src/optional/jwks_fetcher.cpp
 )
 
 target_include_directories(jose
