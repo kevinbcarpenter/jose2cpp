@@ -249,6 +249,110 @@ auto generate_jwe(key_source& keys) -> json {
     return out;
 }
 
+const json k_jwt_claims{
+    {"iss", "https://issuer.example"},
+    {"sub", "kevin"},
+    {"aud", json::array({"api", "web"})},
+    {"exp", 1900000000},
+    {"nbf", 1700000000},
+    {"name", "Kevin ✓"},
+    {"ctx", {{"role", "admin"}, {"levels", json::array({1, 2, 3})}}},
+};
+
+auto jwt_vector(const std::string& name, const std::string& kind) -> json {
+    return json{{"name", name}, {"kind", kind}, {"claims", k_jwt_claims}};
+}
+
+auto signed_jwt_vector(key_source& keys, signing_algorithm alg) -> json {
+    const auto key = signing_key_for(keys, alg);
+    auto v = jwt_vector("signed " + std::string(to_string(alg)), "signed");
+    v["signature_algorithms"] = json::array({to_string(alg)});
+    v["verification_key"] = public_json(key);
+    v["token"] = must(jwt::signed_token({alg, key}).claims(k_jwt_claims).serialize(), v["name"]);
+    return v;
+}
+
+auto encrypted_jwt_vector(key_source& keys, key_algorithm alg, content_encryption enc) -> json {
+    const auto r = recipient_for(keys, alg, enc);
+    auto v = jwt_vector("encrypted " + std::string(to_string(alg)) + " " + std::string(to_string(enc)), "encrypted");
+    v["key_algorithms"] = json::array({to_string(alg)});
+    v["enc"] = to_string(enc);
+    v["decryption_key"] = key_json(r.key);
+    v["token"] = must(jwt::encrypted_token(enc, r.recipient).claims(k_jwt_claims).serialize(), v["name"]);
+    return v;
+}
+
+auto nested_jwt_vector(key_source& keys, key_algorithm alg, content_encryption enc, signing_algorithm sig,
+                       bool compress = false) -> json {
+    const auto signing_key = signing_key_for(keys, sig);
+    const auto r = recipient_for(keys, alg, enc);
+    auto v = jwt_vector("nested " + std::string(to_string(alg)) + " " + std::string(to_string(enc)) + " " +
+                            std::string(to_string(sig)) + (compress ? " DEFLATE" : ""),
+                        "nested");
+    v["signature_algorithms"] = json::array({to_string(sig)});
+    v["key_algorithms"] = json::array({to_string(alg)});
+    v["enc"] = to_string(enc);
+    v["verification_key"] = public_json(signing_key);
+    v["decryption_key"] = key_json(r.key);
+    v["token"] =
+        must(jwt::signed_and_encrypted({sig, signing_key}, enc, r.recipient, {}, {.compress = compress})
+                 .claims(k_jwt_claims)
+                 .serialize(),
+             v["name"]);
+    return v;
+}
+
+// Built from jwt::registered_claims with a single audience, which is
+// written as a plain string.
+auto registered_claims_vector(key_source& keys) -> json {
+    const jwt::registered_claims standard{
+        .issuer = "https://issuer.example",
+        .subject = "kevin",
+        .audience = {"api"},
+        .expiry = jwt::numeric_date::from_seconds(1900000000),
+        .not_before = jwt::numeric_date::from_seconds(1700000000),
+        .issued_at = jwt::numeric_date::from_seconds(1700000000),
+        .id = "cpp-claims-1",
+    };
+    const auto key = signing_key_for(keys, signing_algorithm::ES256);
+    json v{{"name", "signed ES256 registered_claims"}, {"kind", "signed"}, {"claims", json(standard)}};
+    v["signature_algorithms"] = json::array({"ES256"});
+    v["verification_key"] = public_json(key);
+    v["token"] = must(jwt::signed_token({signing_algorithm::ES256, key}).claims(standard).serialize(), v["name"]);
+    return v;
+}
+
+auto generate_jwt(key_source& keys) -> json {
+    json out = json::array();
+    out.push_back(registered_claims_vector(keys));
+    for (auto alg : {signing_algorithm::HS256, signing_algorithm::RS256, signing_algorithm::PS384,
+                     signing_algorithm::ES256, signing_algorithm::ES512, signing_algorithm::EdDSA})
+        out.push_back(signed_jwt_vector(keys, alg));
+    out.push_back(encrypted_jwt_vector(keys, key_algorithm::dir, content_encryption::A128GCM));
+    out.push_back(encrypted_jwt_vector(keys, key_algorithm::A256KW, content_encryption::A256GCM));
+    out.push_back(encrypted_jwt_vector(keys, key_algorithm::A192GCMKW, content_encryption::A192CBC_HS384));
+    out.push_back(nested_jwt_vector(keys, key_algorithm::A128KW, content_encryption::A128GCM, signing_algorithm::RS256));
+    out.push_back(nested_jwt_vector(keys, key_algorithm::dir, content_encryption::A256GCM, signing_algorithm::ES256));
+    out.push_back(nested_jwt_vector(keys, key_algorithm::A256GCMKW, content_encryption::A256CBC_HS512,
+                                    signing_algorithm::EdDSA));
+    out.push_back(nested_jwt_vector(keys, key_algorithm::A128KW, content_encryption::A128GCM, signing_algorithm::HS256,
+                                    true));
+    return out;
+}
+
+// Nested JWTs whose JWE uses a public-key algorithm: allowed by jose2cpp's
+// split rule (the inner signature authenticates them), refused by go-jose.
+auto generate_incompatible_jwt(key_source& keys) -> json {
+    json out = json::array();
+    for (auto alg : {key_algorithm::RSA_OAEP_256, key_algorithm::ECDH_ES_A256KW, key_algorithm::ECDH_ES}) {
+        auto v = nested_jwt_vector(keys, alg, content_encryption::A256GCM, signing_algorithm::ES256);
+        v["reason"] = "go-jose refuses RSA, ECDH-ES and PBES2 key algorithms for nested JWTs too";
+        v["rejected_with"] = "asymmetric encryption algorithms not supported for JWT";
+        out.push_back(std::move(v));
+    }
+    return out;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -262,7 +366,9 @@ int main(int argc, char** argv) {
             {"producer", std::string("jose2cpp ") + JOSE_VERSION},
             {"jws", generate_jws(keys)},
             {"jwe", generate_jwe(keys)},
+            {"jwt", generate_jwt(keys)},
             {"jws_incompatible", generate_incompatible_jws(keys)},
+            {"jwt_incompatible", generate_incompatible_jwt(keys)},
         };
         std::ofstream out(argv[1]);
         out << file.dump(2) << '\n';

@@ -41,6 +41,28 @@
         "lhs": "${hostSystemName}",
         "rhs": "Darwin"
       }
+    },
+    {
+      "name": "bench",
+      "displayName": "Benchmarks (system deps, Release)",
+      "description": "Release build of jose_bench only, for benchmarks/compare.py.",
+      "inherits": "system",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "JOSE_BUILD_BENCH": "ON",
+        "JOSE_BUILD_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "bench-macos",
+      "displayName": "Benchmarks on macOS (Homebrew, Release)",
+      "description": "Like 'bench', with Homebrew's openssl@3.",
+      "inherits": "system-macos",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "JOSE_BUILD_BENCH": "ON",
+        "JOSE_BUILD_TESTS": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -55,6 +77,14 @@
     {
       "name": "system-macos",
       "configurePreset": "system-macos"
+    },
+    {
+      "name": "bench",
+      "configurePreset": "bench"
+    },
+    {
+      "name": "bench-macos",
+      "configurePreset": "bench-macos"
     }
   ],
   "testPresets": [

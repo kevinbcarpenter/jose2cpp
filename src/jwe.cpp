@@ -167,6 +167,8 @@ auto jwe::encrypt(std::span<const uint8_t> plaintext, content_encryption enc,
                   std::span<const jwe_recipient> recipients, const jwe_encrypt_options& options)
     -> expected<jwe> {
     if (recipients.empty()) return bad_argument("JWE needs at least one recipient");
+    if (recipients.size() > max_recipients)
+        return bad_argument("JWE can have at most " + std::to_string(max_recipients) + " recipients");
     const bool single = recipients.size() == 1;
     for (const auto& r : recipients) {
         const auto f = family_of(r.alg);
@@ -402,6 +404,7 @@ auto jwe::parse_compact(std::string_view input, const std::vector<key_algorithm>
                         const std::vector<content_encryption>& encryptions, const extension_set& understood)
     -> expected<jwe> {
     if (auto r = require_algorithms(algorithms, encryptions); !r) return jose::unexpected(r.error());
+    input = internal::trim_compact(input);
 
     std::array<std::string_view, 5> parts;
     size_t start = 0;
@@ -505,6 +508,9 @@ auto jwe::from_json_value(const json& j, const std::vector<key_algorithm>& algor
     if (const json* recipients = member(j, "recipients")) {
         if (!recipients->is_array() || recipients->empty())
             return bad_token("JWE \"recipients\" must be a non-empty array");
+        if (recipients->size() > max_recipients)
+            return bad_token("JWE has " + std::to_string(recipients->size()) + " recipients; at most " +
+                             std::to_string(max_recipients) + " are accepted");
         // go-jose v4's FullSerialize leaves a copy of the first recipient's
         // "encrypted_key" at the top level of general JSON. That exact copy
         // is ignored (it isn't authenticated and nothing reads it); any
@@ -557,8 +563,8 @@ auto jwe::from_json_value(const json& j, const std::vector<key_algorithm>& algor
 // Decrypting
 // ===========================================================================
 
-auto jwe::recover_cek(const jwe_recipient_info& r, const jwk& key, const jwe_decrypt_options& options) const
-    -> expected<secure_bytes> {
+auto jwe::recover_cek(const jwe_recipient_info& r, const jwk& key, const jwe_decrypt_options& options,
+                      pbes2_budget& budget) const -> expected<secure_bytes> {
     // Key selection problems are reported as such; they reveal nothing
     // about the ciphertext.
     if (auto c = check_key(r.alg, enc_, key, false); !c) return jose::unexpected(c.error());
@@ -596,6 +602,14 @@ auto jwe::recover_cek(const jwe_recipient_info& r, const jwk& key, const jwe_dec
         // Bounds the work an attacker can make us do (see pbes2.hpp).
         if (*p2c < 1000 || *p2c > 1000000)
             return make_error(errc::invalid_header, "PBES2 \"p2c\" must be between 1000 and 1000000");
+        // The total across this call's attempts (jwe_decrypt_options).
+        if (static_cast<std::uint64_t>(*p2c) > budget.left) {
+            budget.exhausted = true;
+            return make_error(errc::invalid_header,
+                              "PBES2 work limit reached: \"p2c\" " + std::to_string(*p2c) + " is more than the " +
+                                  std::to_string(budget.left) + " iterations left of max_pbes2_iterations");
+        }
+        budget.left -= static_cast<std::uint64_t>(*p2c);
         cek = pbes2_key_unwrap(r.alg, as_view(key.oct()), r.encrypted_key, *p2s, static_cast<int>(*p2c));
         break;
     }
@@ -682,7 +696,8 @@ auto jwe::open(const jwe_recipient_info& r, expected<secure_bytes> cek, const jw
 auto jwe::decrypt(const jwk& key, const jwe_decrypt_options& options) const -> expected<secure_bytes> {
     if (recipients_.size() != 1)
         return bad_argument("JWE has " + std::to_string(recipients_.size()) + " recipients; use decrypt_multi");
-    return open(recipients_.front(), recover_cek(recipients_.front(), key, options), options);
+    pbes2_budget budget{options.max_pbes2_iterations};
+    return open(recipients_.front(), recover_cek(recipients_.front(), key, options, budget), options);
 }
 
 auto jwe::decrypt(const jwk_set& keys, const jwe_decrypt_options& options) const -> expected<secure_bytes> {
@@ -696,20 +711,22 @@ auto jwe::decrypt(const jwk_set& keys, const jwe_decrypt_options& options) const
         return make_error(errc::invalid_key, "no key in the set has \"kid\":\"" + std::string(*kid) + "\"");
 
     expected<secure_bytes> last = decryption_failed();
+    pbes2_budget budget{options.max_pbes2_iterations};
     for (const jwk& key : candidates) {
-        last = open(r, recover_cek(r, key, options), options);
-        if (last) return last;
+        last = open(r, recover_cek(r, key, options, budget), options);
+        if (last || budget.exhausted) return last;
     }
     return last;
 }
 
 auto jwe::decrypt_multi(const jwk& key, const jwe_decrypt_options& options) const -> expected<decrypted> {
     bool attempted = false;
+    pbes2_budget budget{options.max_pbes2_iterations};
     for (size_t i = 0; i < recipients_.size(); ++i) {
         const auto& r = recipients_[i];
         if (!check_key(r.alg, enc_, key, false) || !epk_matches(r.alg, r.joined, key)) continue;
         attempted = true;
-        auto plaintext = open(r, recover_cek(r, key, options), options);
+        auto plaintext = open(r, recover_cek(r, key, options, budget), options);
         if (plaintext) return decrypted{i, std::move(*plaintext)};
         // Errors other than a failed decryption (e.g. RSA1_5 without the
         // opt-in) are the caller's to see.

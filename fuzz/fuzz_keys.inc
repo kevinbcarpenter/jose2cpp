@@ -1,0 +1,19 @@
+// Generated once with jose-cli generate-key (alg and use removed, so
+// each key can be tried with every algorithm), plus a PBES2 password.
+// Fixed keys keep a crashing input reproducible across processes.
+// clang-format off
+R"KEY({"d":"CmPKTlvVZInFAYBsSU3o6gE5SQpbYRSZ17n8jZYKCGBtVzzuC9K-V9g1FtX3ZPiX_I8JQ2ysc0pK0tKHHn224T5ZyMgGmW_Ff8AexarQTsfibtZe5ci2jtE4ZWWxpYBdOYArSXwwnOnmJOjOUvE5SwJFZHJY5S104-dkKx6InIO7sZZb_Y5dkjxJwKuJoPwhSuptgBPDhsXcoXWSZooQyrV-sc8P_fB4ujWF7gMZQ_XB-qGJ6kIxpyWJJYg6-oyZMSddAltFi6HL5KeiMIw4w1KWurBxwiYsN0roYsR6acPDsbU4eR4BpBQTFhceOKVWTsMFxmZOBTCje64ePHXdMQ","dp":"m5W2guiatyZ2MPZ0oMJIGoXpXd6GbNUisQRuuQLwUOk0puOKaBgqmhONgWjZDKtRJ8Cp4KOX869HLAZxD-F0tkdQb9XL2Ou8hMBTsIQ8NBcN_r366pkjVKwWI4UjYAeFb3p_oWRac3bUeGOcjDE_yynwy4AAMS_dBvtkT17C1ME","dq":"HECBpkwPGbvKOVNB8n69vwvVRvXrLKpVSokE13OYCHOeM6DniIPGYAqP34KZGikIFeTi2g8oBhku14U3h9gFwmNeahfihkg1aZ26jLlaY9TABlNPEAdD45cUqdhNAePC8zXtqIDVlVQb9kYHKLb25cid-hHDDJEskkMS2BPh0CE","e":"AQAB","kid":"k0","kty":"RSA","n":"qfGkJmY7FDNSh76mzCQH_YIDTYP7zUlAsIQAhTVmLD4__8esg03usfxRPziKoldyvix1PsjHj-gTKoCDEEEvZ94qf0MhRaOwafJE4Y0sizm3yuSAA7L8RfnMO0esFbS52KPMXu3xYAuWJ2ssFDv29dmGk5y0gyYOmYZe_tlh57HGBT2KBmFH72CWbOjo3ePPA9fr-Oe3rjGm1EGaFHHTk7_zh24ylv4DLoRAP0KZBKBbTvwfEJEcXPFA_xFmFhp4MgH-W5vniJQTcOpPb_GJlk8LKUob7YcXQILeJwYd2FEiqtXaz_AlwX92fCULD1ZjQsaT0S5c12aDXQ4iVTEeXw","p":"7rpwQKFJUAi19pT2mOcq5S9AzUTttB40fj6esjBK62QaX18vx29_agEZrrdrfKVQt3bHkl-Q5dCw__AQPqL1Wo1MVG19YQvgQrnmsB3N_bfNHOOfxQwF1i9XsktSQ3tPTT7bGkCDtwd6yvgFqCTljv6V01D1y0GhrWLkA6mb50k","q":"tj050mLoXDFIsiDwbA-6mj6Y3TVFAPHwZlt_z25zM35afPQvzxnGCuide20RQPX6VC6VI4cbi-xewgRpJeKCesmYU5xWOlLwue5dy0kmOm9dz02KXUl40LRqdG8J7q8WwIasgi3pLP5rf9k7omwIyZAE583v1Pgq0ggxD-RukGc","qi":"3MV8hAFmLLWPdELklRu2mRnvz6GrgUEKKUlBj6WagHIlMl2yUFYtfjeFCqJtHveYzNe1OvFdy4IenQFZ8HCjr_-lLzqrfrl8TwoekOCrl-YbkXJsTMdkIMFgPKUwFyNNR8ngrZmmHKFTHK183CyeUwwCKLV1waviR9tBpw-y3KI"})KEY",
+R"KEY({"crv":"P-256","d":"EpwIIcJXKW9iOoX1a5sNPNnsHyJXYR59G9S-TU-VzHQ","kid":"k1","kty":"EC","x":"N43sqdLd7Lpyj8YHg_NjBVbYxszIY03YU94BoMtBCp8","y":"Sz0pZHrUDK0srDYpdwUt2IzC0bcEjMp_uLoxp4L-Xa0"})KEY",
+R"KEY({"crv":"P-384","d":"n8OZIRfj1Cbla5ovmwvmrq1-iA3_91wxkhp9qRL87ZomkBYxQofKch6xf5qupsUW","kid":"k2","kty":"EC","x":"VVopL1358xlByHYH6DIQOaeCtOiLHu0l4nwCbe3fknkG64RUfXcsS-4-BJvkDp6D","y":"3fHWkfnzC3lzdbP9-jH1B6V-j4G-drNqY0QsvuS5ETjk_-RjcBeV7P8bBBb47JFS"})KEY",
+R"KEY({"crv":"P-521","d":"Abi4cyDOQe4hy7k0siWqRXQ92mE26ZisfIJI3SVblv-M4U4mkRJPCkCRm3tsTR926CfXCkyXcusbqiENq5XpwpNp","kid":"k3","kty":"EC","x":"ACpWSEq-QljC3Ekn0xneyRpz91C-QGZceh_vN6XBtd7YPlNwF9MCLnjECyu3hum8KGRP3UjgU6Sbqod_2QC6QKxZ","y":"AAF2HcyoHNWHVM5mATnAdxsa8EsgOtVB7vtk1iZCWu6atcM_91Q8GosArUTST2r3ORCW1ITGsmgws8iZrnpg4s9E"})KEY",
+R"KEY({"crv":"Ed25519","d":"P-7Vii-q1z8FTa3HZX3zhIW0pFk644IBly4mmEno0OY","kid":"k4","kty":"OKP","x":"CnsX6tmoyg2ctjTEvRrtJyCJ3wDsCqs8nwmUmd3SYaQ"})KEY",
+R"KEY({"crv":"Ed448","d":"JVyjAZMcFMFOLoSnSz3HLVQGBd1l8yj0-sD0iNRjQ1herFRKEjFTHcStChObzUQ1SJou1WQh9MeY","kid":"k5","kty":"OKP","x":"KuS05Q7QzNBaOI-XfI_-pZkYZN1zlPMrzryV5G0ID6OY4mcdFu2fFJF3d6_ETd0kwq8qqgabtHeA"})KEY",
+R"KEY({"crv":"X25519","d":"8OqDEpQaDlJrKzKtYgzUXPsFFCyVSG5tv8EmWn-e-kk","kid":"k6","kty":"OKP","x":"sne_wFGbhETm8oDWm6vLFVavvrqt5maCCRyBa1rN138"})KEY",
+R"KEY({"crv":"X448","d":"6BLTZHvqg8m630g38dm8QZANosm9ywcYUdn3HrPh_9c6NECexyAplFgyRPVkIWWFdYImwO5B5aw","kid":"k7","kty":"OKP","x":"9Y64BGvXH5fv9NPMQmjDbWhZ9SrG-eaXe9hCGB32sv1ukRn5A3oXwAA25ZHrQqWg0kQYTkgIE9c"})KEY",
+R"KEY({"k":"WvJf-uCg7ScxbHiH9JsXCQ","kid":"k8","kty":"oct"})KEY",
+R"KEY({"k":"oIBhtfVlxA498BMFijDYH6OKjDsh7TdM","kid":"k9","kty":"oct"})KEY",
+R"KEY({"k":"HHSTXUicFOJYGnhQEBz7iezoNCxxArO-fD2HenTEuaQ","kid":"k10","kty":"oct"})KEY",
+R"KEY({"k":"QHYdO_9hscByCzFh0s4PlW1gM_XqCRdGzaRrhYBxo3TQTFCwXdvhzYiJL4cFcNIg","kid":"k11","kty":"oct"})KEY",
+R"KEY({"k":"CwqL7B_czjTnQdh64yO51JPbZymwEfqDUi3r4jsR2YJG2ZYZlcOizVuAnLpULl46JN-O2iY-m2XfHS_ezlXlHw","kid":"k12","kty":"oct"})KEY",
+R"KEY({"kty":"oct","kid":"k13","k":"ZnV6eiBwYXNzd29yZA"})KEY",
+// clang-format on

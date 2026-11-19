@@ -10,20 +10,24 @@
 // checked-in file is known to be good.
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "jose/jose.hpp"
 #include "support/test_support.hpp"
 
 #include <openssl/err.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
 using namespace jose;
 using json = nlohmann::json;
 using jose::test::b64;
+using Catch::Matchers::ContainsSubstring;
 
 namespace {
 
@@ -164,11 +168,111 @@ auto check_incompatible_jws(const json& v) -> void {
     ERR_clear_error();
 }
 
+// Parses and opens a JWT vector; the claims, or the first error.
+auto jwt_claims(const json& v) -> expected<json> {
+    const auto kind = v.at("kind").get<std::string>();
+    std::vector<signing_algorithm> sig_algs;
+    for (const auto& a : v.value("signature_algorithms", json::array()))
+        sig_algs.push_back(must(parse_signing_algorithm(a.get<std::string>()), "alg"));
+    std::vector<key_algorithm> key_algs;
+    for (const auto& a : v.value("key_algorithms", json::array()))
+        key_algs.push_back(must(parse_key_algorithm(a.get<std::string>()), "alg"));
+    std::vector<content_encryption> encs;
+    if (v.contains("enc")) encs.push_back(must(parse_content_encryption(v.at("enc").get<std::string>()), "enc"));
+    const auto token = v.at("token").get<std::string>();
+
+    if (kind == "signed") {
+        auto parsed = jwt::parse_signed(token, sig_algs);
+        if (!parsed) return jose::unexpected(parsed.error());
+        return parsed->claims(must(jwk::from_json(v.at("verification_key")), "key"));
+    }
+    if (kind == "encrypted") {
+        auto parsed = jwt::parse_encrypted(token, key_algs, encs);
+        if (!parsed) return jose::unexpected(parsed.error());
+        return parsed->claims(must(jwk::from_json(v.at("decryption_key")), "key"));
+    }
+    REQUIRE(kind == "nested");
+    auto parsed = jwt::parse_signed_and_encrypted(token, key_algs, encs, sig_algs);
+    if (!parsed) return jose::unexpected(parsed.error());
+    auto inner = parsed->decrypt(must(jwk::from_json(v.at("decryption_key")), "key"));
+    if (!inner) return jose::unexpected(inner.error());
+    return inner->claims(must(jwk::from_json(v.at("verification_key")), "key"));
+}
+
+auto check_jwt(const json& v) -> void {
+    INFO("JWT " << v.at("name").get<std::string>());
+    const auto claims = must(jwt_claims(v), "claims");
+    CHECK(claims == v.at("claims"));
+    // The registered claims read back through jwt::registered_claims too.
+    const auto registered = must(jwt::decode<jwt::registered_claims>(claims), "registered claims");
+    CHECK(registered.subject == claims.at("sub").get<std::string>());
+    CHECK(registered.expiry == jwt::numeric_date::from_seconds(claims.at("exp").get<std::int64_t>()));
+    CHECK(json(registered.audience) == claims.at("aud"));
+    // A vector named for DEFLATE really is compressed.
+    if (v.at("name").get<std::string>().ends_with(" DEFLATE")) {
+        const auto token = v.at("token").get<std::string>();
+        const auto bytes = must(base64url::decode(std::string_view(token).substr(0, token.find('.'))), "header");
+        const auto header = json::parse(bytes.begin(), bytes.end());
+        CHECK(header.value("zip", "") == "DEF");
+    }
+}
+
+// go-jose's claims validation, case by case. The only difference is at the
+// instant of expiry: RFC 7519 §4.1.4 says a token is expired "on or after"
+// "exp", go-jose only after it.
+auto check_validation(const json& cases) -> void {
+    const std::set<std::string> expired_here{
+        "at the instant of exp",
+        "default leeway, at the instant of exp + 60s",
+        "negative leeway, at the instant of exp - 10s",
+    };
+    std::set<std::string> differences_seen;
+    for (const auto& v : cases) {
+        const auto name = v.at("name").get<std::string>();
+        INFO("validation case: " << name);
+        const auto claims = must(jwt::decode<jwt::registered_claims>(v.at("claims")), "claims");
+        const auto& e = v.at("expected");
+        jwt::expected_claims want{
+            .any_audience = e.value("aud", jwt::audience{}),
+            .time = std::chrono::system_clock::time_point(
+                std::chrono::seconds(v.at("time").get<std::int64_t>()) +
+                std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                    std::chrono::nanoseconds(v.at("time_nanos").get<std::int64_t>()))),
+        };
+        if (e.contains("iss")) want.issuer = e.at("iss").get<std::string>();
+        if (e.contains("sub")) want.subject = e.at("sub").get<std::string>();
+        if (e.contains("jti")) want.id = e.at("jti").get<std::string>();
+        const auto r = claims.validate(want, std::chrono::seconds(v.at("leeway").get<std::int64_t>()));
+
+        auto go_jose = v.at("result").get<std::string>();
+        if (expired_here.contains(name)) {
+            CHECK(go_jose.empty()); // still a difference, or move the case out of the list
+            differences_seen.insert(name);
+            go_jose = "exp";
+        }
+        if (go_jose.empty()) {
+            INFO((r ? std::string("ok") : r.error().message));
+            CHECK(r.has_value());
+        } else {
+            REQUIRE_FALSE(r.has_value());
+            CHECK_THAT(r.error().message, ContainsSubstring("\"" + go_jose + "\""));
+        }
+    }
+    CHECK(differences_seen == expired_here);
+}
+
 auto check_file(const json& file) -> void {
     size_t jws_count = 0;
     size_t jwe_count = 0;
     for (const auto& v : file.at("jws")) jws_count += check_jws(v);
     for (const auto& v : file.at("jwe")) jwe_count += check_jwe(v);
+    size_t compressed_nested = 0;
+    for (const auto& v : file.at("jwt")) {
+        check_jwt(v);
+        if (v.at("kind") == "nested" && v.at("name").get<std::string>().ends_with(" DEFLATE")) ++compressed_nested;
+    }
+    CHECK_FALSE(file.at("jwt").empty());
+    CHECK(compressed_nested >= 1); // check_jwt confirmed each one's "zip" header
     // The other library's incompatibilities must be rejected; jose2cpp's
     // own (RFC-conformant) ones must verify.
     const bool own = file.value("producer", "").starts_with("jose2cpp");
@@ -177,6 +281,21 @@ auto check_file(const json& file) -> void {
             jws_count += check_jws(v);
         else
             check_incompatible_jws(v);
+    }
+    // go-jose produces none of these yet; jose2cpp's own must work in jose2cpp.
+    for (const auto& v : file.value("jwt_incompatible", json::array())) {
+        if (own) {
+            check_jwt(v);
+        } else {
+            INFO("JWT " << v.at("name").get<std::string>() << " must be rejected");
+            CHECK_FALSE(jwt_claims(v));
+            ERR_clear_error();
+        }
+    }
+    if (!own) {
+        REQUIRE(file.contains("jwt_validation"));
+        CHECK(file.at("jwt_validation").size() >= 40);
+        check_validation(file.at("jwt_validation"));
     }
     INFO("producer: " << file.value("producer", "?"));
     CHECK(jws_count > 0);

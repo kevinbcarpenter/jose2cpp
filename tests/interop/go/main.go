@@ -19,10 +19,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
 
 type jwsVector struct {
@@ -45,13 +48,55 @@ type jweVector struct {
 	Serializations map[string]string `json:"serializations"`
 }
 
+// A JWT: "signed" (verification_key), "encrypted" (decryption_key) or
+// "nested" (both). claims is the expected claims object.
+type jwtVector struct {
+	Name                string          `json:"name"`
+	Reason              string          `json:"reason,omitempty"`        // jwt_incompatible only
+	RejectedWith        string          `json:"rejected_with,omitempty"` // the consumer's error must contain this
+	Kind                string          `json:"kind"`
+	SignatureAlgorithms []string        `json:"signature_algorithms,omitempty"`
+	KeyAlgorithms       []string        `json:"key_algorithms,omitempty"`
+	Encryption          string          `json:"enc,omitempty"`
+	VerificationKey     json.RawMessage `json:"verification_key,omitempty"`
+	DecryptionKey       json.RawMessage `json:"decryption_key,omitempty"`
+	Claims              json.RawMessage `json:"claims"`
+	Token               string          `json:"token"`
+}
+
+// A claims-validation case: go-jose's answer for these claims, checked
+// against these expectations at this time with this leeway. Result is ""
+// when the claims are valid, otherwise the claim that failed.
+type validationCase struct {
+	Name     string          `json:"name"`
+	Claims   json.RawMessage `json:"claims"`
+	Expected expectedClaims  `json:"expected"`
+	Time     int64           `json:"time"`       // seconds since the epoch
+	Nanos    int64           `json:"time_nanos"` // nanoseconds, a whole number of microseconds so every clock can hold it
+	Leeway   int64           `json:"leeway"`     // seconds
+	Result   string          `json:"result"`
+}
+
+// jwt.Expected, with "" (go-jose's "don't check") left out.
+type expectedClaims struct {
+	Issuer      string   `json:"iss,omitempty"`
+	Subject     string   `json:"sub,omitempty"`
+	AnyAudience []string `json:"aud,omitempty"`
+	ID          string   `json:"jti,omitempty"`
+}
+
 type vectorFile struct {
 	Producer string      `json:"producer"`
 	JWS      []jwsVector `json:"jws"`
 	JWE      []jweVector `json:"jwe"`
+	JWT      []jwtVector `json:"jwt"`
 	// Known incompatibilities: the consumer must NOT accept these. If it
 	// starts to, the difference has been fixed and the vector can move.
 	JWSIncompatible []jwsVector `json:"jws_incompatible"`
+	JWTIncompatible []jwtVector `json:"jwt_incompatible"`
+
+	// go-jose only: jose2cpp's validation is checked against these.
+	JWTValidation []validationCase `json:"jwt_validation,omitempty"`
 }
 
 // go-jose v4 signs the raw payload when "b64" is false but still
@@ -340,10 +385,203 @@ func generateJWE(k *keys) []jweVector {
 	return out
 }
 
+var jwtClaims = map[string]interface{}{
+	"iss":  "https://issuer.example",
+	"sub":  "kevin",
+	"aud":  []interface{}{"api", "web"},
+	"exp":  1900000000,
+	"nbf":  1700000000,
+	"name": "Kevin ✓",
+	"ctx":  map[string]interface{}{"role": "admin", "levels": []interface{}{1, 2, 3}},
+}
+
+func generateJWT(k *keys) []jwtVector {
+	claims := must(json.Marshal(jwtClaims))
+	var out []jwtVector
+
+	for _, alg := range []jose.SignatureAlgorithm{jose.HS256, jose.RS256, jose.PS384, jose.ES256, jose.ES512, jose.EdDSA} {
+		key := k.signingKey(alg)
+		signer := must(jose.NewSigner(jose.SigningKey{Algorithm: alg, Key: key}, (&jose.SignerOptions{}).WithType("JWT")))
+		out = append(out, jwtVector{
+			Name: "signed " + string(alg), Kind: "signed", SignatureAlgorithms: []string{string(alg)},
+			VerificationKey: publicJWK(key), Claims: claims,
+			Token: must(jwt.Signed(signer).Claims(jwtClaims).Serialize()),
+		})
+	}
+
+	// Built from go-jose's own jwt.Claims, with a single audience, which
+	// jwt.Audience writes as a plain string.
+	{
+		std := jwt.Claims{
+			Issuer: "https://issuer.example", Subject: "kevin", Audience: jwt.Audience{"api"},
+			Expiry: jwt.NewNumericDate(time.Unix(1900000000, 0)), NotBefore: jwt.NewNumericDate(time.Unix(1700000000, 0)),
+			IssuedAt: jwt.NewNumericDate(time.Unix(1700000000, 0)), ID: "go-claims-1",
+		}
+		key := k.signingKey(jose.ES256)
+		signer := must(jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key}, (&jose.SignerOptions{}).WithType("JWT")))
+		out = append(out, jwtVector{
+			Name: "signed ES256 jwt.Claims", Kind: "signed", SignatureAlgorithms: []string{"ES256"},
+			VerificationKey: publicJWK(key), Claims: must(json.Marshal(std)),
+			Token: must(jwt.Signed(signer).Claims(std).Serialize()),
+		})
+	}
+
+	type encCase struct {
+		alg jose.KeyAlgorithm
+		enc jose.ContentEncryption
+	}
+	for _, c := range []encCase{{jose.DIRECT, jose.A128GCM}, {jose.A256KW, jose.A256GCM}, {jose.A192GCMKW, jose.A192CBC_HS384}} {
+		rcpt, key := k.recipient(c.alg, c.enc, "")
+		enc := must(jose.NewEncrypter(c.enc, rcpt, (&jose.EncrypterOptions{}).WithType("JWT")))
+		out = append(out, jwtVector{
+			Name: "encrypted " + string(c.alg) + " " + string(c.enc), Kind: "encrypted",
+			KeyAlgorithms: []string{string(c.alg)}, Encryption: string(c.enc),
+			DecryptionKey: marshal(key), Claims: claims,
+			Token: must(jwt.Encrypted(enc).Claims(jwtClaims).Serialize()),
+		})
+	}
+
+	type nestedCase struct {
+		alg jose.KeyAlgorithm
+		enc jose.ContentEncryption
+		sig jose.SignatureAlgorithm
+	}
+	for _, c := range []nestedCase{
+		{jose.A128KW, jose.A128GCM, jose.RS256},
+		{jose.DIRECT, jose.A256GCM, jose.ES256},
+		{jose.A256GCMKW, jose.A256CBC_HS512, jose.EdDSA},
+	} {
+		sigKey := k.signingKey(c.sig)
+		signer := must(jose.NewSigner(jose.SigningKey{Algorithm: c.sig, Key: sigKey}, (&jose.SignerOptions{}).WithType("JWT")))
+		rcpt, decKey := k.recipient(c.alg, c.enc, "")
+		enc := must(jose.NewEncrypter(c.enc, rcpt, (&jose.EncrypterOptions{}).WithContentType("JWT")))
+		out = append(out, jwtVector{
+			Name: "nested " + string(c.alg) + " " + string(c.enc) + " " + string(c.sig), Kind: "nested",
+			SignatureAlgorithms: []string{string(c.sig)}, KeyAlgorithms: []string{string(c.alg)},
+			Encryption: string(c.enc), VerificationKey: publicJWK(sigKey), DecryptionKey: marshal(decKey),
+			Claims: claims, Token: must(jwt.SignedAndEncrypted(signer, enc).Claims(jwtClaims).Serialize()),
+		})
+	}
+
+	// Nested and compressed ("zip":"DEF").
+	{
+		sigKey := k.signingKey(jose.HS256)
+		signer := must(jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: sigKey}, (&jose.SignerOptions{}).WithType("JWT")))
+		rcpt, decKey := k.recipient(jose.A128KW, jose.A128GCM, "")
+		opts := (&jose.EncrypterOptions{Compression: jose.DEFLATE}).WithContentType("JWT")
+		enc := must(jose.NewEncrypter(jose.A128GCM, rcpt, opts))
+		out = append(out, jwtVector{
+			Name: "nested A128KW A128GCM HS256 DEFLATE", Kind: "nested",
+			SignatureAlgorithms: []string{"HS256"}, KeyAlgorithms: []string{"A128KW"},
+			Encryption: "A128GCM", VerificationKey: publicJWK(sigKey), DecryptionKey: marshal(decKey),
+			Claims: claims, Token: must(jwt.SignedAndEncrypted(signer, enc).Claims(jwtClaims).Serialize()),
+		})
+	}
+	return out
+}
+
+func validationResult(err error) string {
+	switch err {
+	case nil:
+		return ""
+	case jwt.ErrInvalidIssuer:
+		return "iss"
+	case jwt.ErrInvalidSubject:
+		return "sub"
+	case jwt.ErrInvalidID:
+		return "jti"
+	case jwt.ErrInvalidAudience:
+		return "aud"
+	case jwt.ErrNotValidYet:
+		return "nbf"
+	case jwt.ErrExpired:
+		return "exp"
+	case jwt.ErrIssuedInTheFuture:
+		return "iat"
+	}
+	panic(err)
+}
+
+func generateValidation() []validationCase {
+	date := func(s int64) *jwt.NumericDate { return jwt.NewNumericDate(time.Unix(s, 0)) }
+	full := jwt.Claims{
+		Issuer: "https://issuer.example", Subject: "kevin", Audience: jwt.Audience{"api", "web"},
+		NotBefore: date(1000), Expiry: date(2000), IssuedAt: date(1000), ID: "token-1",
+	}
+	timesOnly := jwt.Claims{NotBefore: date(1000), Expiry: date(2000)}
+	type c struct {
+		name   string
+		claims jwt.Claims
+		want   jwt.Expected
+		at     int64
+		micros int64
+		leeway int64
+	}
+	all := jwt.Expected{Issuer: "https://issuer.example", Subject: "kevin", AnyAudience: jwt.Audience{"web"}, ID: "token-1"}
+	cases := []c{
+		{"everything matches", full, all, 1500, 0, 0},
+		{"iss differs", full, jwt.Expected{Issuer: "https://evil.example"}, 1500, 0, 0},
+		{"iss expected but absent", timesOnly, jwt.Expected{Issuer: "https://issuer.example"}, 1500, 0, 0},
+		{"sub differs in case", full, jwt.Expected{Subject: "Kevin"}, 1500, 0, 0},
+		{"jti differs", full, jwt.Expected{ID: "token-2"}, 1500, 0, 0},
+		{"aud has one of several", full, jwt.Expected{AnyAudience: jwt.Audience{"other", "web"}}, 1500, 0, 0},
+		{"aud has none", full, jwt.Expected{AnyAudience: jwt.Audience{"other"}}, 1500, 0, 0},
+		{"aud expected but absent", timesOnly, jwt.Expected{AnyAudience: jwt.Audience{"api"}}, 1500, 0, 0},
+		{"aud present but not expected", full, jwt.Expected{}, 1500, 0, 0},
+		{"everything wrong reports iss first", full,
+			jwt.Expected{Issuer: "x", Subject: "x", AnyAudience: jwt.Audience{"x"}, ID: "x"}, 9999, 0, 0},
+		{"sub before jti before aud", full, jwt.Expected{Subject: "x", AnyAudience: jwt.Audience{"x"}, ID: "x"}, 9999, 0, 0},
+		{"jti before aud", full, jwt.Expected{AnyAudience: jwt.Audience{"x"}, ID: "x"}, 9999, 0, 0},
+		{"aud before the dates", full, jwt.Expected{AnyAudience: jwt.Audience{"x"}}, 9999, 0, 0},
+		{"a second before nbf", timesOnly, jwt.Expected{}, 999, 0, 0},
+		{"a microsecond before nbf", timesOnly, jwt.Expected{}, 999, 999999, 0},
+		{"at nbf", timesOnly, jwt.Expected{}, 1000, 0, 0},
+		{"a second before exp", timesOnly, jwt.Expected{}, 1999, 0, 0},
+		{"a microsecond before exp", timesOnly, jwt.Expected{}, 1999, 999999, 0},
+		{"at the instant of exp", timesOnly, jwt.Expected{}, 2000, 0, 0},
+		{"a microsecond after exp", timesOnly, jwt.Expected{}, 2000, 1, 0},
+		{"a second after exp", timesOnly, jwt.Expected{}, 2001, 0, 0},
+		{"default leeway, 61s before nbf", timesOnly, jwt.Expected{}, 939, 0, 60},
+		{"default leeway, 60s before nbf", timesOnly, jwt.Expected{}, 940, 0, 60},
+		{"default leeway, 59s after exp", timesOnly, jwt.Expected{}, 2059, 0, 60},
+		{"default leeway, at the instant of exp + 60s", timesOnly, jwt.Expected{}, 2060, 0, 60},
+		{"default leeway, 61s after exp", timesOnly, jwt.Expected{}, 2061, 0, 60},
+		{"negative leeway, 9s after nbf", timesOnly, jwt.Expected{}, 1009, 0, -10},
+		{"negative leeway, 10s after nbf", timesOnly, jwt.Expected{}, 1010, 0, -10},
+		{"negative leeway, 11s before exp", timesOnly, jwt.Expected{}, 1989, 0, -10},
+		{"negative leeway, at the instant of exp - 10s", timesOnly, jwt.Expected{}, 1990, 0, -10},
+		{"negative leeway, 9s before exp", timesOnly, jwt.Expected{}, 1991, 0, -10},
+		{"iat a second in the future", jwt.Claims{IssuedAt: date(1000)}, jwt.Expected{}, 999, 0, 0},
+		{"iat in the future within leeway", jwt.Claims{IssuedAt: date(1000)}, jwt.Expected{}, 940, 0, 60},
+		{"nbf reported before exp", jwt.Claims{NotBefore: date(3000), Expiry: date(2000)}, jwt.Expected{}, 2500, 0, 0},
+		{"nbf reported before iat", jwt.Claims{NotBefore: date(3000), Expiry: date(2000), IssuedAt: date(3000)},
+			jwt.Expected{}, 2500, 0, 0},
+		{"exp reported before iat", jwt.Claims{Expiry: date(2000), IssuedAt: date(3000)}, jwt.Expected{}, 2500, 0, 0},
+		{"no dates, long before the epoch", jwt.Claims{}, jwt.Expected{}, -4000000000, 0, 0},
+		{"no dates, far in the future", jwt.Claims{}, jwt.Expected{}, 4000000000, 0, 0},
+		{"before the epoch", jwt.Claims{NotBefore: date(-100), Expiry: date(-50)}, jwt.Expected{}, -75, 500000, 0},
+		// -50.5s: floored to -51 it's before nbf; truncated to -50 it would pass.
+		{"half a second before a pre-epoch nbf", jwt.Claims{NotBefore: date(-50)}, jwt.Expected{}, -51, 500000, 0},
+	}
+	var out []validationCase
+	for _, v := range cases {
+		want := v.want.WithTime(time.Unix(v.at, v.micros*1000))
+		out = append(out, validationCase{
+			Name: v.name, Claims: must(json.Marshal(v.claims)),
+			Expected: expectedClaims{Issuer: v.want.Issuer, Subject: v.want.Subject,
+				AnyAudience: v.want.AnyAudience, ID: v.want.ID},
+			Time: v.at, Nanos: v.micros * 1000, Leeway: v.leeway,
+			Result: validationResult(v.claims.ValidateWithLeeway(want, time.Duration(v.leeway)*time.Second)),
+		})
+	}
+	return out
+}
+
 func generate(path string) error {
 	k := newKeys()
-	file := vectorFile{Producer: goJoseVersion(), JWS: generateJWS(k), JWE: generateJWE(k),
-		JWSIncompatible: generateIncompatibleJWS(k)}
+	file := vectorFile{Producer: goJoseVersion(), JWS: generateJWS(k), JWE: generateJWE(k), JWT: generateJWT(k),
+		JWSIncompatible: generateIncompatibleJWS(k), JWTIncompatible: []jwtVector{},
+		JWTValidation: generateValidation()}
 	data, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		return err
@@ -444,6 +682,94 @@ func verifyJWE(v jweVector) error {
 	return nil
 }
 
+func parseKey(raw json.RawMessage) (jose.JSONWebKey, error) {
+	var k jose.JSONWebKey
+	err := json.Unmarshal(raw, &k)
+	return k, err
+}
+
+func verifyJWT(v jwtVector) error {
+	var sigAlgs []jose.SignatureAlgorithm
+	for _, a := range v.SignatureAlgorithms {
+		sigAlgs = append(sigAlgs, jose.SignatureAlgorithm(a))
+	}
+	var keyAlgs []jose.KeyAlgorithm
+	for _, a := range v.KeyAlgorithms {
+		keyAlgs = append(keyAlgs, jose.KeyAlgorithm(a))
+	}
+	encs := []jose.ContentEncryption{jose.ContentEncryption(v.Encryption)}
+
+	var got map[string]interface{}
+	switch v.Kind {
+	case "signed":
+		key, err := parseKey(v.VerificationKey)
+		if err != nil {
+			return err
+		}
+		tok, err := jwt.ParseSigned(v.Token, sigAlgs)
+		if err != nil {
+			return fmt.Errorf("parse: %w", err)
+		}
+		if err := tok.Claims(key, &got); err != nil {
+			return fmt.Errorf("claims: %w", err)
+		}
+	case "encrypted":
+		key, err := parseKey(v.DecryptionKey)
+		if err != nil {
+			return err
+		}
+		tok, err := jwt.ParseEncrypted(v.Token, keyAlgs, encs)
+		if err != nil {
+			return fmt.Errorf("parse: %w", err)
+		}
+		if err := tok.Claims(key, &got); err != nil {
+			return fmt.Errorf("claims: %w", err)
+		}
+	case "nested":
+		verKey, err := parseKey(v.VerificationKey)
+		if err != nil {
+			return err
+		}
+		decKey, err := parseKey(v.DecryptionKey)
+		if err != nil {
+			return err
+		}
+		tok, err := jwt.ParseSignedAndEncrypted(v.Token, keyAlgs, encs, sigAlgs)
+		if err != nil {
+			return fmt.Errorf("parse: %w", err)
+		}
+		inner, err := tok.Decrypt(decKey)
+		if err != nil {
+			return fmt.Errorf("decrypt: %w", err)
+		}
+		if err := inner.Claims(verKey, &got); err != nil {
+			return fmt.Errorf("claims: %w", err)
+		}
+	default:
+		return fmt.Errorf("unknown kind %q", v.Kind)
+	}
+	var want map[string]interface{}
+	if err := json.Unmarshal(v.Claims, &want); err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(got, want) {
+		return fmt.Errorf("claims mismatch: got %v, want %v", got, want)
+	}
+	// The registered claims must also read through go-jose's jwt.Claims
+	// (its Audience and NumericDate types).
+	var std jwt.Claims
+	if err := json.Unmarshal(v.Claims, &std); err != nil {
+		return fmt.Errorf("jwt.Claims: %w", err)
+	}
+	if want["sub"] != nil && std.Subject != want["sub"] {
+		return fmt.Errorf("jwt.Claims subject %q, want %v", std.Subject, want["sub"])
+	}
+	if exp, ok := want["exp"].(float64); ok && (std.Expiry == nil || std.Expiry.Time().Unix() != int64(exp)) {
+		return fmt.Errorf("jwt.Claims expiry %v, want %v", std.Expiry, exp)
+	}
+	return nil
+}
+
 func verify(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -453,7 +779,7 @@ func verify(path string) error {
 	if err := json.Unmarshal(data, &file); err != nil {
 		return err
 	}
-	if len(file.JWS) == 0 || len(file.JWE) == 0 {
+	if len(file.JWS) == 0 || len(file.JWE) == 0 || len(file.JWT) == 0 {
 		return fmt.Errorf("%s has no vectors", path)
 	}
 	var failures []string
@@ -470,9 +796,29 @@ func verify(path string) error {
 			failures = append(failures, "JWE "+v.Name+": "+err.Error())
 		}
 	}
+	for _, v := range file.JWT {
+		count++
+		if err := verifyJWT(v); err != nil {
+			failures = append(failures, "JWT "+v.Name+": "+err.Error())
+		}
+	}
 	// Each serialization of the other library's known incompatibilities
 	// must fail here; go-jose's own must of course still verify.
 	own := strings.HasPrefix(file.Producer, "go-jose")
+	for _, v := range file.JWTIncompatible {
+		err := verifyJWT(v)
+		if own && err != nil {
+			failures = append(failures, "JWT "+v.Name+": "+err.Error())
+		} else if !own && err == nil {
+			failures = append(failures, "JWT "+v.Name+": listed as incompatible ("+v.Reason+
+				") but go-jose accepted it; move it to \"jwt\"")
+		} else if !own && !strings.Contains(err.Error(), v.RejectedWith) {
+			// Rejected, but not for the documented reason: the vector or
+			// go-jose has changed, so the listed difference is unproven.
+			failures = append(failures, "JWT "+v.Name+": expected go-jose to reject it with \""+v.RejectedWith+
+				"\", got: "+err.Error())
+		}
+	}
 	for _, v := range file.JWSIncompatible {
 		if own {
 			count += len(v.Serializations)
@@ -491,13 +837,14 @@ func verify(path string) error {
 		}
 	}
 	if len(failures) > 0 {
-		return fmt.Errorf("%d of %d vectors from %s failed:\n  %s", len(failures), len(file.JWS)+len(file.JWE),
+		return fmt.Errorf("%d of %d vectors from %s failed:\n  %s", len(failures),
+			len(file.JWS)+len(file.JWE)+len(file.JWT)+len(file.JWSIncompatible)+len(file.JWTIncompatible),
 			file.Producer, strings.Join(failures, "\n  "))
 	}
-	fmt.Printf("%s verified %d JWS and %d JWE vectors (%d serializations) from %s", goJoseVersion(),
-		len(file.JWS), len(file.JWE), count, file.Producer)
+	fmt.Printf("%s verified %d JWS, %d JWE and %d JWT vectors (%d tokens) from %s", goJoseVersion(),
+		len(file.JWS), len(file.JWE), len(file.JWT), count, file.Producer)
 	if !own {
-		fmt.Printf("; %d known incompatibilities still rejected", len(file.JWSIncompatible))
+		fmt.Printf("; %d known incompatibilities still rejected", len(file.JWSIncompatible)+len(file.JWTIncompatible))
 	}
 	fmt.Println()
 	return nil

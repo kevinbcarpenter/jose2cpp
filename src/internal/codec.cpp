@@ -14,8 +14,13 @@ auto parse_json_strict(std::string_view text, std::string_view what) -> expected
     std::vector<std::set<std::string>> scopes;
     std::string duplicate;
     bool has_duplicate = false;
+    bool too_deep = false;
 
-    json::parser_callback_t cb = [&](int /*depth*/, json::parse_event_t event, json& parsed) {
+    json::parser_callback_t cb = [&](int depth, json::parse_event_t event, json& parsed) {
+        if (depth > max_json_depth) {
+            too_deep = true;
+            return false; // discard it; the whole parse fails below
+        }
         switch (event) {
         case json::parse_event_t::object_start:
             scopes.emplace_back();
@@ -37,6 +42,9 @@ auto parse_json_strict(std::string_view text, std::string_view what) -> expected
     };
 
     auto j = json::parse(text, cb, /*allow_exceptions=*/false);
+    if (too_deep)
+        return make_error(errc::serialization_error, std::string(what) + " is nested more than " +
+                                                         std::to_string(max_json_depth) + " levels deep");
     if (j.is_discarded())
         return make_error(errc::serialization_error, std::string(what) + " is not valid JSON");
     if (has_duplicate)

@@ -227,6 +227,8 @@ auto jws::unsigned_jws(std::span<const uint8_t> payload, bool b64) -> jws {
 auto jws::sign(std::span<const uint8_t> payload, std::span<const jws_signer> signers,
                const jws_sign_options& options) -> expected<jws> {
     if (signers.empty()) return bad_argument("JWS needs at least one signer");
+    if (signers.size() > max_signatures)
+        return bad_argument("JWS can have at most " + std::to_string(max_signatures) + " signatures");
     jws out = unsigned_jws(payload, options.b64);
 
     for (const auto& signer : signers) {
@@ -282,6 +284,8 @@ auto jws::sign_async(std::string_view payload, const jws_signer& signer, const j
 auto jws::sign_async(std::vector<uint8_t> payload, std::vector<jws_signer> signers, jws_sign_options options)
     -> task<expected<jws>> {
     if (signers.empty()) co_return bad_argument("JWS needs at least one signer");
+    if (signers.size() > max_signatures)
+        co_return bad_argument("JWS can have at most " + std::to_string(max_signatures) + " signatures");
     jws out = unsigned_jws(payload, options.b64);
 
     for (const auto& signer : signers) {
@@ -385,6 +389,7 @@ auto parse_compact_parts(std::string_view input) -> expected<std::array<std::str
 auto jws::parse_compact(std::string_view input, const std::vector<signing_algorithm>& algorithms,
                         const extension_set& understood) -> expected<jws> {
     if (auto r = require_algorithms(algorithms); !r) return jose::unexpected(r.error());
+    input = internal::trim_compact(input);
     auto parts = parse_compact_parts(input);
     if (!parts) return jose::unexpected(parts.error());
     const auto& [prot, payload, signature] = *parts;
@@ -432,6 +437,9 @@ auto jws::from_json_value(const json& j, const std::vector<signing_algorithm>& a
             return bad_token("JWS JSON mixes general and flattened serialization members");
         if (!sigs->is_array() || sigs->empty())
             return bad_token("JWS \"signatures\" must be a non-empty array");
+        if (sigs->size() > max_signatures)
+            return bad_token("JWS has " + std::to_string(sigs->size()) + " signatures; at most " +
+                             std::to_string(max_signatures) + " are accepted");
         for (const auto& s : *sigs) {
             if (!s.is_object()) return bad_token("JWS \"signatures\" entries must be objects");
             entries.push_back(&s);
@@ -495,6 +503,7 @@ auto jws::parse_detached(std::string_view input, std::span<const uint8_t> payloa
         if (!j) return jose::unexpected(j.error());
         return from_json_value(*j, algorithms, understood, &payload);
     }
+    input = internal::trim_compact(input);
     auto parts = parse_compact_parts(input);
     if (!parts) return jose::unexpected(parts.error());
     if (!(*parts)[1].empty()) return bad_token("detached JWS must have an empty payload part");

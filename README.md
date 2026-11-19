@@ -1,12 +1,13 @@
 # jose2cpp
 
-C++ variation of the Go Jose library.
-
-A modern C++20 JOSE (JSON Object Signing and Encryption) library.
+A C++20 take on the Go JOSE library. jose2cpp does JSON Object Signing and
+Encryption (JWS, JWE, JWK and JWT) on top of OpenSSL 3,
+and it follows go-jose v4's rules: parsing always takes the algorithms you
+accept, and a key embedded in a token is never trusted on its own.
 
 ## Quick start
 
-Include the umbrella header and use the unified entry points — `sign`/`verify`
+Include the umbrella header and use the unified entry points: `sign`/`verify`
 for all 13 JWS algorithms and `encrypt`/`decrypt` for all 6 JWE content
 encryption algorithms. Every fallible call returns `jose::expected<T>`
 (no exceptions); key material lives in `jose::secure_bytes`, which zeroes
@@ -100,6 +101,125 @@ auto parsed = jose::jwe::parse(*token, {jose::key_algorithm::ECDH_ES_A256KW},
 auto opened = parsed->decrypt(key);    // expected<secure_bytes>
 ```
 
+A token decides how much work it asks for, so there are limits. A JWE can
+have at most 32 recipients and a JWS at most 32 signatures, the same caps
+go-jose uses. PBES2 is the expensive one: each recipient's `p2c` is a PBKDF2
+iteration count, capped at 1,000,000, and on top of that one decrypt call
+spends at most `jwe_decrypt_options::max_pbes2_iterations` (1,000,000 by
+default) across every recipient and key it tries. So a JSON JWE listing a
+pile of PBES2 recipients costs you at most 1,000,000 iterations in total,
+about one maximum-cost run, not one run per recipient. That fits three
+recipients at our default `p2c` of 310,000 but only one at go-jose's 600,000,
+so raise it if you expect tokens with several PBES2 recipients, or set it to 0
+if you never use PBES2. JSON anywhere in a token, key or claims set can be
+nested at most 128 levels deep, because a few tens of KB of brackets would
+otherwise overflow the stack.
+
+Compact tokens, signed or encrypted, can have whitespace at either end, so
+one read from a file with a trailing newline still parses. Whitespace inside
+the token is an error, because the RFCs don't allow it and it would let the
+same token be written many ways. (go-jose's JWT parser accepts line breaks
+anywhere and refuses spaces anywhere; details in PLAN.md.) If you keep a
+revocation list or replay cache, key it on `jti` or the signed content, not
+on the token string: even a re-serialized token isn't unique, because an
+ECDSA signature has two valid forms.
+
+### Tokens (JWT)
+
+`jose::jwt` builds signed, encrypted and nested (signed then encrypted) JWTs.
+Claims can be a JSON object or your own struct with a `to_json`, and you can
+call `claims()` as many times as you like. Giving the same claim name twice is
+an error, because silently letting one claim set overwrite another's `exp` is
+exactly the kind of bug you don't want in a token.
+
+```cpp
+auto token = jose::jwt::signed_token({jose::signing_algorithm::ES256, key})
+                 .claims({{"iss", "https://auth.example.com"}, {"sub", "kevin"}})
+                 .claims(my_private_claims)
+                 .serialize();                    // compact JWS, "typ":"JWT"
+
+auto sealed = jose::jwt::signed_and_encrypted(
+                  {jose::signing_algorithm::EdDSA, signing_key},
+                  jose::content_encryption::A256GCM,
+                  {jose::key_algorithm::ECDH_ES_A256KW, their_public_key})
+                  .claims(claims)
+                  .serialize();                   // JWE with "cty":"JWT" around the JWS
+```
+
+Any error along the chain comes back from `serialize()` (or `token()`, which
+gives you the `jws` / `jwe` itself), so one check covers the whole thing.
+
+Parsing works the same way as JWS and JWE: you list the algorithms you accept,
+and you only get the claims after the signature checks out or the JWE opens.
+
+```cpp
+auto parsed = jose::jwt::parse_signed(token, {jose::signing_algorithm::ES256});
+auto claims = parsed->claims(public_key);              // nlohmann::json, verified
+auto mine   = jose::jwt::decode<my_claims>(*claims);   // via your from_json
+
+auto nested = jose::jwt::parse_signed_and_encrypted(sealed,
+                  {jose::key_algorithm::ECDH_ES_A256KW}, {jose::content_encryption::A256GCM},
+                  {jose::signing_algorithm::EdDSA});
+auto inner  = nested->decrypt(my_private_key);         // the signed JWT inside
+auto verified = inner->claims(their_signing_key);
+```
+
+For the registered claims there's `jwt::registered_claims`, with
+`jwt::numeric_date` (a `std::chrono` time in whole seconds) and
+`jwt::audience` (one string or a list). They work in the builder, in
+`decode`, and inside your own claims structs:
+
+```cpp
+jose::jwt::registered_claims standard{
+    .issuer = "https://auth.example.com",
+    .subject = "kevin",
+    .audience = {"api"},
+    .expiry = jose::jwt::numeric_date::now() + std::chrono::minutes(15),
+};
+auto token = jose::jwt::signed_token(signer).claims(standard).claims(my_private_claims).serialize();
+
+auto back = jose::jwt::decode<jose::jwt::registered_claims>(*verified);
+if (!back) return back.error();  // a malformed claim, e.g. "exp":"tomorrow"
+auto ok = back->validate({.issuer = "https://auth.example.com", .any_audience = {"api"}});
+```
+
+`validate` works like go-jose's `Claims.Validate`. It checks `iss`, `sub`,
+`jti` and `aud` against what you ask for and `nbf`, `exp` and `iat` against
+the current time (or `.time`), with a minute of leeway by default. Pass a
+second argument to change that: `validate(want, 0s)`, or a negative leeway on
+the client side to ask "will the server still take this?". It reports the
+first failure as `errc::missing_claim`, `invalid_claim`, `not_yet_valid` or
+`expired`.
+
+Two things it doesn't do, same as go-jose. It doesn't check `aud` unless you
+set `any_audience`, even though RFC 7519 says a service should reject a token
+whose `aud` doesn't name it. Doing that by default would make `aud` required
+the moment a token carries one, and a service that forgot to set
+`any_audience` would start turning away good tokens. So set it whenever your
+tokens carry an audience. It also doesn't require `exp`, so a token without
+one never expires; if yours should always have one, check for it. We differ
+from go-jose in two places. At exactly the `exp` second the token is expired,
+because RFC 7519 says "on or after"; go-jose still takes it at that instant.
+And an empty string you ask for is checked like any other value, so
+`.issuer = ""` means "iss must be empty". go-jose reads `""` as "don't check";
+leave the field unset for that.
+
+A badly formed claim, like `"exp":"tomorrow"` or `"exp":null`, is an error
+rather than "no expiry". That one matters: a parser that shrugs off a bad
+`exp` hands out tokens that never expire.
+
+One rule to know about. A JWT that's only encrypted has no signature, so
+anyone who can encrypt to you can make one. With RSA or ECDH-ES that's anyone
+holding your public key, and PBES2 is only as good as the password. So
+encrypted-only JWTs are limited to `dir`, AES key wrap and AES-GCM key wrap,
+both when you build one and when you parse one. go-jose's parser has the same
+limit, but its builder doesn't, so go-jose will happily make an encrypted-only
+JWT that neither library will accept. Nested JWTs are signed inside, so they can use any key
+algorithm, RSA-OAEP and ECDH-ES included, which is what OIDC encrypted ID
+tokens need. That's where we part ways with go-jose: it refuses those for
+nested JWTs too, so a go-jose service can't read a jose2cpp nested JWT that
+uses RSA or ECDH-ES outside. Details in [tests/interop](tests/interop/README.md).
+
 ### HSMs and key services (opaque keys)
 
 When the key lives in an HSM, a PKCS#11 token or a cloud KMS, implement
@@ -135,6 +255,114 @@ auto signed_ = co_await jose::jws::sign_async(payload, {jose::signing_algorithm:
                                                        std::make_shared<my_async_kms_signer>()});
 auto plaintext = co_await parsed_jwe->decrypt_async(my_async_kms_decrypter);
 ```
+
+JWTs work the same way. The builders have `token_async()` and
+`serialize_async()`, and the parsed tokens have `claims_async()` and, for
+nested JWTs, `decrypt_async()`:
+
+```cpp
+auto token = co_await jose::jwt::signed_token({jose::signing_algorithm::ES256, kms_signer})
+                 .claims(claims)
+                 .serialize_async();
+
+auto parsed = jose::jwt::parse_signed_and_encrypted(*token, key_algs, encs, sig_algs);
+auto inner = co_await parsed->decrypt_async(kms_decrypter);   // still held to sig_algs
+auto verified = co_await inner->claims_async(kms_verifier);
+```
+
+The tasks copy the builder or the parsed token, so either can go away before
+the task runs. Only the verifier or decrypter you pass by reference has to
+outlive it. The sync `serialize()` refuses an async signer and tells you to
+use `serialize_async()`.
+
+### Keys from a JWKS URL
+
+Most identity providers publish their signing keys as a JWK Set at a URL, and
+`jose::optional::jwks_fetcher` (`jose/optional/jwks_fetcher.hpp`) keeps a copy
+of it cached and refreshed for you. It isn't in `jose.hpp`, and it doesn't pull
+in an HTTP library. You write the transport, a single `get()`, on top of
+whatever client you already have:
+
+```cpp
+struct my_http final : jose::optional::http_client {
+    auto get(jose::optional::http_request request)
+        -> jose::task<jose::expected<jose::optional::http_response>> override;
+        // GET request.url over TLS; honour request.timeout and request.max_response_bytes
+};
+
+jose::optional::jwks_fetcher fetcher({.url = "https://auth.example.com/.well-known/jwks.json"},
+                                     std::make_unique<my_http>());
+
+auto parsed = jose::jwt::parse_signed(token, {jose::signing_algorithm::RS256});
+auto kid = parsed->header().kid();
+auto keys = co_await fetcher.keys_for(std::string(*kid));
+auto claims = parsed->claims(**keys);
+```
+
+`keys()` serves the cached set until it's `refresh_interval` old (five minutes
+by default). `keys_for(kid)` also fetches when no key has that `kid`, which is
+how a key the provider just rotated in gets picked up. Fetches start at most
+once per `min_refresh_interval` (30 seconds) no matter who asks, so a flood of
+tokens with made-up `kid`s can't turn into a flood of requests to your
+provider. While a fetch is running, other callers that need one wait for it
+instead of starting their own.
+
+When a fetch fails, the old set is still served for `max_stale` (an hour)
+past `refresh_interval`, and after that callers get the error. A key the
+provider has withdrawn is still accepted during that hour, so keep `max_stale`
+as short as your provider's uptime lets you. Only public keys are kept:
+symmetric keys are dropped, because anyone who can read the URL could sign
+with them, and a private key is cut down to its public half. URLs have to be
+`https://` unless you set `allow_http`, and your `http_client` has to check
+certificates, because the keys are only as good as the connection that
+brought them.
+
+### Command line
+
+`jose-cli` does from a shell what the library does from code. It takes the
+same commands and flags as go-jose's `jose-util`, so a `jose-util` command
+line usually works unchanged; the exceptions are at the end of this section.
+Build it with `-DJOSE_BUILD_CLI=ON`.
+
+```sh
+jose-cli generate-key --use sig --alg ES256 --kid demo     # writes jwk-sig-demo-{priv,pub}.json
+echo "hello" | jose-cli sign --key jwk-sig-demo-priv.json | jose-cli verify --key jwk-sig-demo-pub.json
+
+jose-cli encrypt --key public.pem --alg RSA-OAEP --enc A128GCM --in plain.txt --out token.jwe
+jose-cli decrypt --key private.pem --in token.jwe
+
+jose-cli expand < token.jws                                # compact to JSON, nothing checked
+```
+
+The commands are `sign`, `verify`, `encrypt`, `decrypt`, `expand` and
+`generate-key`, and `jose-cli COMMAND --help` lists each one's flags. Keys can
+be PEM, DER or JWK, as with `jose-util`, and `verify` and `decrypt` also take a
+JWK Set and try each key in it. A few things go past `jose-util`:
+
+- `verify` and `decrypt` only succeed with algorithms the key can actually be
+  used with, so an RSA key never verifies an HS256 token. `--alg` (and `--enc`
+  for `decrypt`) limits it to the algorithms you list.
+- `--alg` defaults to the key's own `alg`, and `encrypt --zip` compresses.
+- `generate-key` also makes symmetric keys (HS*, A*KW, A*GCMKW, `dir`) and,
+  with `--crv`, Ed448, X25519 and X448 keys. It never overwrites a file, and
+  on Linux and macOS the private key file is readable only by you. On Windows
+  it's only marked read-only and gets the folder's permissions, so put it
+  somewhere private.
+- RSA1_5 needs `--allow-legacy` on both `encrypt` and `decrypt`.
+
+Tokens come out with a trailing newline; payloads and plaintexts come out
+exactly as they went in. `decrypt --out` creates a new file readable only by
+you (on Linux and macOS). The exit status is 0 on success, 1 when the
+operation fails (a bad signature, the wrong key, an unreadable file) and 2 for
+a bad command line.
+
+Where a `jose-util` command line won't work as is: giving a flag like `--key`
+twice is an error rather than "the last one wins", an argument that isn't a
+flag is an error rather than ignored, and `generate-key` swaps characters
+other than letters, digits, `.`, `-` and `_` in a `--kid` for `_` in the file
+names (the key's `kid` itself is kept).
+With `-DJOSE_INTEROP_GO=ON`, ctest also builds go-jose's `jose-util` and
+checks that each tool reads what the other writes.
 
 ### Coroutines (`jose::task`)
 
@@ -204,7 +432,7 @@ There are two supported ways to get the dependencies. Use **vcpkg** for reproduc
 pinned versions across machines and CI (recommended for anything beyond local dev);
 use **system packages** for the quickest local setup.
 
-### Option A — vcpkg (cross-platform, recommended)
+### Option A: vcpkg (cross-platform, recommended)
 
 Works identically on macOS and Ubuntu and pins the exact versions from
 [vcpkg.json](vcpkg.json), so you avoid distro version skew (notably Catch2 on Ubuntu 22.04).
@@ -228,7 +456,7 @@ Works identically on macOS and Ubuntu and pins the exact versions from
    ctest --preset vcpkg
    ```
 
-### Option B — system packages
+### Option B: system packages
 
 **macOS (Homebrew):**
 ```sh
@@ -264,8 +492,75 @@ or use the **vcpkg** option above to get Catch2 3.x. OpenSSL 3 and nlohmann-json
 | Option              | Default | Description                          |
 | ------------------- | ------- | ------------------------------------ |
 | `JOSE_BUILD_TESTS`  | `ON`    | Build the Catch2 test suite          |
-| `JOSE_BUILD_BENCH`  | `OFF`   | Build benchmarks                     |
-| `JOSE_BUILD_CLI`    | `OFF`   | Build the CLI tool                   |
-| `JOSE_FUZZ`         | `OFF`   | Build fuzz targets (needs libFuzzer) |
+| `JOSE_BUILD_BENCH`  | `OFF`   | Build `jose_bench` (see [Benchmarks](#benchmarks)) |
+| `JOSE_BUILD_CLI`    | `OFF`   | Build `jose-cli` (see [Command line](#command-line)) |
+| `JOSE_FUZZ`         | `OFF`   | Build the fuzz targets (see [Fuzzing](#fuzzing)) |
+| `JOSE_BUILD_DOCS`   | `OFF`   | Add a `jose_docs` target that builds the API reference (see [API reference](#api-reference)) |
+| `JOSE_DOCS_WARN_AS_ERROR` | `OFF` | Make the `jose_docs` target fail on any Doxygen warning |
 | `JOSE_INTEROP_GO`   | `OFF`   | Add live go-jose interop tests to ctest (needs Go; see [tests/interop](tests/interop/README.md)) |
 | `JOSE_USE_STD_EXPECTED` | `AUTO` | `jose::expected` implementation: `AUTO` probes for C++23 `std::expected` and falls back to the vendored [expected-lite](https://github.com/martinmoene/expected-lite) on C++20; `ON`/`OFF` force one. The choice is exported as a public compile definition so consumers always match the library build. |
+
+### API reference
+
+Every public header is documented for Doxygen (tested with 1.9.8 and 1.18).
+From the repository root:
+
+```sh
+mkdir -p build/docs                # Doxygen won't create both levels itself
+doxygen docs/Doxyfile              # writes build/docs/html/index.html
+```
+
+or configure with `-DJOSE_BUILD_DOCS=ON` and run `cmake --build <dir> --target jose_docs`,
+which writes to `<dir>/docs/html` and stamps the version. The vendored
+expected-lite and the `detail` namespaces are left out. CI builds the
+reference on every run and fails on any warning, so an undocumented public
+function or a broken reference doesn't get merged. The built pages are kept
+as a build artifact for two weeks.
+
+### Benchmarks
+
+`benchmarks/` runs the same 40 cases through jose2cpp and go-jose v4 (same
+keys, payloads and timing loop) and prints them side by side:
+
+```sh
+cmake --preset bench-macos && cmake --build --preset bench-macos    # bench on Linux
+python3 benchmarks/compare.py --jose-bench build/bench-macos/benchmarks/jose_bench
+```
+
+On an M5 Max, jose2cpp is 2.4 to 2.5 times faster for RSA signing and
+RSA-OAEP decryption and 1.1 to 3.5 times faster for ECDSA. For the small
+HMAC and AES tokens it's up to 1.3 µs behind go-jose when producing one and
+up to 3.1 µs ahead when verifying or decrypting. It's slower for EdDSA (Go's Ed25519 is
+faster than OpenSSL's here), for ECDH-ES encryption (about 2.4 times), and
+for importing keys: an RSA private key takes 19 ms because every import is
+validated. The full table, what each case covers
+and how to read it are in [benchmarks/README.md](benchmarks/README.md).
+
+### Fuzzing
+
+`-DJOSE_FUZZ=ON` builds six fuzz targets in `fuzz/`: base64url, JWK
+parsing, JWS and JWE parsing (then verifying and decrypting with keys of
+every kind), the JWT parsers with the registered claims, and the DEFLATE
+inflater that JWE compression uses. Each one checks invariants as well as
+crashes: a parsed token re-serializes to one that parses the same and
+serializes to exactly the same text again, decoded base64url encodes back to
+the same text, inflated output never goes past its cap. The whole build,
+library included, gets ASan and UBSan (`JOSE_FUZZ_SANITIZERS`), with
+assertions on whatever the build type.
+
+With clang and libFuzzer the targets are real fuzzers. Run one on a scratch
+copy of its corpus so the checked-in seeds stay as they are:
+
+```sh
+cmake -S . -B build-fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DJOSE_FUZZ=ON -DJOSE_BUILD_TESTS=OFF
+cmake --build build-fuzz
+cp -r fuzz/corpus/jws /tmp/jws && build-fuzz/fuzz/fuzz_jws -max_total_time=300 /tmp/jws
+```
+
+Apple's clang and GCC don't ship libFuzzer, so there the targets are built
+to replay the files they're given instead, which is still a regression test
+under the sanitizers. MSVC isn't supported. Either way `ctest` replays the corpus. The seeds come
+from the RFC and go-jose test vectors (`python3 -I fuzz/make_corpus.py`
+writes them), and CI fuzzes every target for a minute whenever it runs (pull
+requests and pushes to `main` and `develop`).
+

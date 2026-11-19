@@ -1,0 +1,1 @@
+{"aud":"api","exp":1900000000,"iat":1700000000,"iss":"https://issuer.example","jti":"go-claims-1","nbf":1700000000,"sub":"kevin"}
