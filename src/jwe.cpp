@@ -248,11 +248,9 @@ auto jwe::encrypt(std::span<const uint8_t> plaintext, content_encryption enc,
                                           bytes_view(p.apu()), bytes_view(p.apv()),
                                           direct ? cek_byte_size(enc) * 8 : wrap_key_bits(kw));
             if (!agreed) return jose::unexpected(agreed.error());
-            auto eph = jwk::from_pkey(std::move(agreed->ephemeral_key));
-            if (!eph) return jose::unexpected(eph.error());
-            auto eph_pub = eph->public_key();
-            if (!eph_pub) return jose::unexpected(eph_pub.error());
-            auto epk = eph_pub->to_json();
+            // Exported without the private-key checks or a jwk round trip;
+            // set() validates it as a public key, once (PLAN.md §Benchmarks).
+            auto epk = jwk::ephemeral_public_json(agreed->ephemeral_key.get());
             if (!epk) return jose::unexpected(epk.error());
             if (auto s = set("epk", std::move(*epk)); !s) return jose::unexpected(s.error());
             if (direct) {
@@ -279,11 +277,17 @@ auto jwe::encrypt(std::span<const uint8_t> plaintext, content_encryption enc,
     if (options.compress)
         if (auto s = prot.set("zip", "DEF"); !s) return jose::unexpected(s.error());
     if (single) {
+        json merged = prot.to_json();
         for (const auto& [name, value] : params.front().to_json().items()) {
             if (prot.contains(name))
                 return bad_argument("\"" + name + "\" is set in both the protected header and the recipient");
-            if (auto s = prot.set(name, value); !s) return jose::unexpected(s.error());
+            merged[name] = value;
         }
+        // One validation of the merged header, reusing the keys both parts
+        // already parsed ("epk" in particular).
+        auto joined = header::from_json_reusing(std::move(merged), {&prot, &params.front()});
+        if (!joined) return jose::unexpected(joined.error());
+        prot = std::move(*joined);
         params.front() = header{};
     }
     out.protected_ = std::move(prot);

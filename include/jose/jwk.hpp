@@ -162,6 +162,10 @@ private:
 
     /// Builds a jwk around an already-validated key; see jwk.cpp.
     static auto adopt(evp_pkey_ptr key) -> expected<jwk>;
+    /// The public members of a key this library just generated (a JWE
+    /// ephemeral key), as JSON, without running the key checks: jwe puts
+    /// the result in "epk", and parsing the header validates it once.
+    static auto ephemeral_public_json(EVP_PKEY* key) -> expected<nlohmann::json>;
 
     /// Checks the metadata invariants ("alg", "use"/"key_ops", x5c/x5t);
     /// called by every construction path and setter.
@@ -186,6 +190,7 @@ private:
     std::optional<std::vector<uint8_t>> x5t_s256_;
 
     friend class jwk_set;
+    friend class jwe;
 };
 
 /// JWK Set (RFC 7517 §5).

@@ -345,7 +345,9 @@ auto run_check(EVP_PKEY* key, bool priv) -> expected<void> {
 
 // PLAN.md §Key Validation: RSA >= 2048 bits and internally consistent; EC
 // points on the declared curve (and d matching); OKP sizes per curve.
-auto inspect_and_validate(EVP_PKEY* key) -> expected<key_facts> {
+// `validate` false skips the OpenSSL key checks, for exporting a key this
+// library just generated (jwk::ephemeral_public_json).
+auto inspect_and_validate(EVP_PKEY* key, bool validate = true) -> expected<key_facts> {
     if (key == nullptr) return invalid("null key");
 
     const int id = EVP_PKEY_get_base_id(key);
@@ -355,7 +357,8 @@ auto inspect_and_validate(EVP_PKEY* key) -> expected<key_facts> {
             return make_error(errc::key_size_too_small,
                               "RSA keys must be at least 2048 bits (got " + std::to_string(bits) + ")");
         const bool priv = has_bn_param(key, OSSL_PKEY_PARAM_RSA_D);
-        if (auto r = run_check(key, priv); !r) return jose::unexpected(r.error());
+        if (validate)
+            if (auto r = run_check(key, priv); !r) return jose::unexpected(r.error());
         return key_facts{kty::RSA, priv, std::nullopt, std::nullopt};
     }
 
@@ -370,7 +373,8 @@ auto inspect_and_validate(EVP_PKEY* key) -> expected<key_facts> {
             return make_error(errc::unsupported_algorithm,
                               "unsupported EC curve: " + std::string(group, len));
         const bool priv = has_bn_param(key, OSSL_PKEY_PARAM_PRIV_KEY);
-        if (auto r = run_check(key, priv); !r) return jose::unexpected(r.error());
+        if (validate)
+            if (auto r = run_check(key, priv); !r) return jose::unexpected(r.error());
         return key_facts{kty::EC, priv, info->crv, std::nullopt};
     }
 
@@ -378,7 +382,8 @@ auto inspect_and_validate(EVP_PKEY* key) -> expected<key_facts> {
         size_t len = 0;
         const bool priv = EVP_PKEY_get_raw_private_key(key, nullptr, &len) == 1;
         ERR_clear_error();
-        if (auto r = run_check(key, priv); !r) return jose::unexpected(r.error());
+        if (validate)
+            if (auto r = run_check(key, priv); !r) return jose::unexpected(r.error());
         return key_facts{kty::OKP, priv, std::nullopt, info->crv};
     }
 
@@ -413,6 +418,26 @@ auto add_bn(json& out, EVP_PKEY* key, const char* member, const char* param, siz
     if (!bn) return jose::unexpected(bn.error());
     out[member] = bn_b64(bn->get(), size);
     return {};
+}
+
+// EC "x" and "y" from the encoded public point (0x04 || X || Y), read once.
+// Asking for OSSL_PKEY_PARAM_EC_PUB_X and _Y separately converts the point
+// to affine coordinates twice, which was most of the cost of writing a JWE
+// "epk" (PLAN.md §Benchmarks). Falls back to the two parameters if the key
+// encodes its point another way.
+auto add_ec_point(json& out, EVP_PKEY* key, size_t size) -> expected<void> {
+    std::array<unsigned char, 1 + 2 * 66> point{}; // P-521 is the largest
+    size_t len = 0;
+    if (EVP_PKEY_get_octet_string_param(key, OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY, point.data(), point.size(),
+                                        &len) == 1 &&
+        len == 1 + 2 * size && point[0] == 0x04) {
+        out["x"] = base64url::encode(std::span<const uint8_t>(point.data() + 1, size));
+        out["y"] = base64url::encode(std::span<const uint8_t>(point.data() + 1 + size, size));
+        return {};
+    }
+    ERR_clear_error();
+    if (auto r = add_bn(out, key, "x", OSSL_PKEY_PARAM_EC_PUB_X, size); !r) return jose::unexpected(r.error());
+    return add_bn(out, key, "y", OSSL_PKEY_PARAM_EC_PUB_Y, size);
 }
 
 // --- "alg" compatibility ---
@@ -463,6 +488,18 @@ auto jwk::adopt(evp_pkey_ptr key) -> expected<jwk> {
 
 auto jwk::from_pkey(evp_pkey_ptr key) -> expected<jwk> {
     return adopt(std::move(key));
+}
+
+auto jwk::ephemeral_public_json(EVP_PKEY* key) -> expected<json> {
+    auto facts = inspect_and_validate(key, /*validate=*/false);
+    if (!facts) return jose::unexpected(facts.error());
+    jwk view;
+    view.kty_ = facts->type;
+    view.private_ = false;
+    view.ec_crv_ = facts->ec;
+    view.okp_crv_ = facts->okp;
+    view.pkey_ = std::shared_ptr<EVP_PKEY>(key, [](EVP_PKEY*) {}); // borrowed, not owned
+    return view.key_members(/*include_private=*/false);
 }
 
 auto jwk::from_oct(std::span<const uint8_t> key) -> expected<jwk> {
@@ -667,8 +704,7 @@ auto jwk::key_members(bool include_private) const -> expected<json> {
     case kty::EC: {
         const auto& info = ec_by_curve(*ec_crv_);
         out["crv"] = std::string(info.jose_name);
-        if (auto r = add_bn(out, key, "x", OSSL_PKEY_PARAM_EC_PUB_X, info.size); !r) return jose::unexpected(r.error());
-        if (auto r = add_bn(out, key, "y", OSSL_PKEY_PARAM_EC_PUB_Y, info.size); !r) return jose::unexpected(r.error());
+        if (auto r = add_ec_point(out, key, info.size); !r) return jose::unexpected(r.error());
         if (include_private && private_)
             if (auto r = add_bn(out, key, "d", OSSL_PKEY_PARAM_PRIV_KEY, info.size); !r)
                 return jose::unexpected(r.error());

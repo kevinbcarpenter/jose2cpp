@@ -529,9 +529,9 @@ python3 benchmarks/compare.py --jose-bench build/bench-macos/benchmarks/jose_ben
 
 On an M5 Max, jose2cpp is 2.4 to 2.5 times faster for RSA signing and
 RSA-OAEP decryption and 1.1 to 3.5 times faster for ECDSA. For the small
-HMAC and AES tokens it's up to 1.3 µs behind go-jose when producing one and
-up to 3.1 µs ahead when verifying or decrypting. It's slower for EdDSA (Go's Ed25519 is
-faster than OpenSSL's here), for ECDH-ES encryption (about 2.4 times), and
+HMAC and AES tokens it's up to 1.4 µs behind go-jose when producing one and
+up to 3.0 µs ahead when verifying or decrypting. It's slower for EdDSA (Go's Ed25519 is
+faster than OpenSSL's here), for ECDH-ES (about 1.3 times), and
 for importing keys: an RSA private key takes 19 ms because every import is
 validated. The full table, what each case covers
 and how to read it are in [benchmarks/README.md](benchmarks/README.md).

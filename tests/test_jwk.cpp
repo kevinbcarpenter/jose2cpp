@@ -4,6 +4,7 @@
 #include "support/test_support.hpp"
 
 #include <openssl/bio.h>
+#include <openssl/core_names.h>
 #include <openssl/encoder.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
@@ -547,4 +548,38 @@ TEST_CASE("JWK Set skips unusable members", "[jwk][jwk_set]") {
     dup.add(k);
     dup.add(k);
     CHECK(dup.find_all("same").size() == 2);
+}
+
+TEST_CASE("EC keys serialize the same whatever their point conversion form", "[jwk][ec]") {
+    // to_json reads x and y from the encoded point when it is uncompressed
+    // and falls back to the coordinate parameters otherwise. OpenSSL 3.0
+    // and 3.6 encode uncompressed whatever the form is set to, so this
+    // checks that changing the form changes nothing; it doesn't reach the
+    // fallback (the add_bn path every EC key used before). The fixed
+    // vectors in "RFC JWK vectors parse, round-trip and thumbprint" check
+    // the encoded-point x and y byte for byte on P-256, P-384 and P-521.
+    for (auto crv : {ec_curve::P256, ec_curve::P384, ec_curve::P521}) {
+        auto key = jwk::generate_ec(crv);
+        REQUIRE(key.has_value());
+        auto want = key->public_key()->to_json();
+        REQUIRE(want.has_value());
+
+        auto der = std::vector<unsigned char>();
+        {
+            unsigned char* buf = nullptr;
+            int len = i2d_PUBKEY(key->pkey(), &buf);
+            REQUIRE(len > 0);
+            der.assign(buf, buf + len);
+            OPENSSL_free(buf);
+        }
+        const unsigned char* p = der.data();
+        EVP_PKEY* raw = d2i_PUBKEY(nullptr, &p, static_cast<long>(der.size()));
+        REQUIRE(raw != nullptr);
+        REQUIRE(EVP_PKEY_set_utf8_string_param(raw, OSSL_PKEY_PARAM_EC_POINT_CONVERSION_FORMAT, "compressed") == 1);
+        auto compressed = jwk::from_pkey(make_evp_pkey_ptr(raw));
+        REQUIRE(compressed.has_value());
+        auto got = compressed->to_json();
+        REQUIRE(got.has_value());
+        CHECK(*got == *want);
+    }
 }

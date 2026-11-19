@@ -151,7 +151,24 @@ auto header::from_base64url(std::string_view encoded) -> expected<header> {
 }
 
 auto header::from_json(json j) -> expected<header> {
+    return from_json_reusing(std::move(j), {});
+}
+
+auto header::from_json_reusing(json j, std::initializer_list<const header*> known) -> expected<header> {
     if (!j.is_object()) return invalid("JOSE header must be a JSON object");
+
+    // A "jwk", "epk" or "x5c" whose JSON is identical to one in a header
+    // that already parsed it is taken from there instead of being parsed
+    // and validated again (PLAN.md §Benchmarks: building an ECDH-ES JWE
+    // validated the same "epk" three or more times).
+    auto known_key = [&](std::string_view name, const json& value,
+                         std::optional<jose::jwk> header::*member) -> const jose::jwk* {
+        for (const header* h : known) {
+            const json* v = find(h->json_, name);
+            if (v != nullptr && (h->*member).has_value() && *v == value) return &*(h->*member);
+        }
+        return nullptr;
+    };
 
     for (auto name : k_string_params)
         if (const json* v = find(j, name); v != nullptr && !v->is_string())
@@ -170,21 +187,34 @@ auto header::from_json(json j) -> expected<header> {
 
     header out;
 
-    if (const json* v = find(j, "jwk")) {
-        auto key = parse_public_jwk(*v, "jwk");
+    for (auto [name, member] : {std::pair{"jwk", &header::jwk_}, std::pair{"epk", &header::epk_}}) {
+        const json* v = find(j, name);
+        if (v == nullptr) continue;
+        if (const jose::jwk* reused = known_key(name, *v, member)) {
+            out.*member = *reused;
+            continue;
+        }
+        auto key = parse_public_jwk(*v, name);
         if (!key) return jose::unexpected(key.error());
-        out.jwk_ = std::move(*key);
-    }
-    if (const json* v = find(j, "epk")) {
-        auto key = parse_public_jwk(*v, "epk");
-        if (!key) return jose::unexpected(key.error());
-        out.epk_ = std::move(*key);
+        out.*member = std::move(*key);
     }
 
     if (const json* v = find(j, "x5c")) {
-        auto chain = parse_x5c(*v);
-        if (!chain) return jose::unexpected(chain.error());
-        out.x5c_ = std::move(*chain);
+        const std::vector<std::vector<uint8_t>>* reused = nullptr;
+        for (const header* h : known) {
+            const json* hv = find(h->json_, "x5c");
+            if (hv != nullptr && !h->x5c_.empty() && *hv == *v) {
+                reused = &h->x5c_;
+                break;
+            }
+        }
+        if (reused != nullptr) {
+            out.x5c_ = *reused;
+        } else {
+            auto chain = parse_x5c(*v);
+            if (!chain) return jose::unexpected(chain.error());
+            out.x5c_ = std::move(*chain);
+        }
         if (auto r = check_thumbprint(j, "x5t", EVP_sha1(), out.x5c_.front()); !r)
             return jose::unexpected(r.error());
         if (auto r = check_thumbprint(j, "x5t#S256", EVP_sha256(), out.x5c_.front()); !r)
@@ -218,7 +248,7 @@ auto header::get(std::string_view name) const -> const json* {
 auto header::set(std::string name, json value) -> expected<void> {
     json next = json_;
     next[std::move(name)] = std::move(value);
-    auto parsed = from_json(std::move(next));
+    auto parsed = from_json_reusing(std::move(next), {this});
     if (!parsed) return jose::unexpected(parsed.error());
     *this = std::move(*parsed);
     return {};
@@ -317,8 +347,9 @@ auto join_headers(header_context ctx, const header& protected_header, const head
         return invalid("header \"b64\" must be listed in \"crit\" (RFC 7797 §6)");
 
     // Every part was validated individually; the join only adds the
-    // cross-part x5c/x5t check, which from_json repeats.
-    return header::from_json(std::move(joined));
+    // cross-part x5c/x5t check, which from_json repeats. Keys and chains the
+    // parts already parsed are reused.
+    return header::from_json_reusing(std::move(joined), {&protected_header, &shared_unprotected, &per_recipient});
 }
 
 } // namespace jose
