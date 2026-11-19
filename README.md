@@ -492,7 +492,7 @@ or use the **vcpkg** option above to get Catch2 3.x. OpenSSL 3 and nlohmann-json
 | Option              | Default | Description                          |
 | ------------------- | ------- | ------------------------------------ |
 | `JOSE_BUILD_TESTS`  | `ON`    | Build the Catch2 test suite          |
-| `JOSE_BUILD_BENCH`  | `OFF`   | Build benchmarks                     |
+| `JOSE_BUILD_BENCH`  | `OFF`   | Build `jose_bench` (see [Benchmarks](#benchmarks)) |
 | `JOSE_BUILD_CLI`    | `OFF`   | Build `jose-cli` (see [Command line](#command-line)) |
 | `JOSE_FUZZ`         | `OFF`   | Build the fuzz targets (see [Fuzzing](#fuzzing)) |
 | `JOSE_BUILD_DOCS`   | `OFF`   | Add a `jose_docs` target that builds the API reference (see [API reference](#api-reference)) |
@@ -515,6 +515,25 @@ expected-lite and the `detail` namespaces are left out. CI builds the
 reference on every run and fails on any warning, so an undocumented public
 function or a broken reference doesn't get merged. The built pages are kept
 as a build artifact for two weeks.
+
+### Benchmarks
+
+`benchmarks/` runs the same 40 cases through jose2cpp and go-jose v4 (same
+keys, payloads and timing loop) and prints them side by side:
+
+```sh
+cmake --preset bench-macos && cmake --build --preset bench-macos    # bench on Linux
+python3 benchmarks/compare.py --jose-bench build/bench-macos/benchmarks/jose_bench
+```
+
+On an M5 Max, jose2cpp is 2.4 to 2.5 times faster for RSA signing and
+RSA-OAEP decryption and 1.1 to 3.5 times faster for ECDSA. For the small
+HMAC and AES tokens it's up to 1.3 µs behind go-jose when producing one and
+up to 3.1 µs ahead when verifying or decrypting. It's slower for EdDSA (Go's Ed25519 is
+faster than OpenSSL's here), for ECDH-ES encryption (about 2.4 times), and
+for importing keys: an RSA private key takes 19 ms because every import is
+validated. The full table, what each case covers
+and how to read it are in [benchmarks/README.md](benchmarks/README.md).
 
 ### Fuzzing
 

@@ -191,6 +191,10 @@ if(JOSE_FUZZ)
     add_subdirectory(fuzz)
 endif()
 
+if(JOSE_BUILD_BENCH)
+    add_subdirectory(benchmarks)
+endif()
+
 # Install
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)

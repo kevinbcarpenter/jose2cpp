@@ -102,7 +102,10 @@ jose2cpp/
 │   ├── make_corpus.py       # seeds from tests/vectors
 │   └── corpus/
 ├── benchmarks/
-│   └── bench_main.cpp
+│   ├── bench_main.cpp       # jose_bench
+│   ├── go/main.go           # the same cases with go-jose
+│   ├── compare.py           # runs both, prints the table
+│   └── keys.json            # keys both sides use
 └── tools/
     ├── cli.hpp / cli.cpp       # jose-cli's commands (tested in-process)
     └── jose_cli.cpp            # CLI utility (like jose-util)
@@ -426,7 +429,7 @@ High-level JWT API and production readiness.
 8. ✅ CLI tool (`jose-cli`): sign, verify, encrypt, decrypt, expand, generate-key (see §CLI)
 9. ✅ Fuzz targets (libFuzzer): `jwk::from_json`, `jws::parse`, `jwe::parse`, the `jwt::parse_*` and registered claims, base64url, DEFLATE inflation (see §Fuzz Testing)
 10. ✅ API documentation (Doxygen) (see §API Documentation)
-11. Benchmarks vs. go-jose (sign/verify throughput, parse latency)
+11. ✅ Benchmarks vs. go-jose (sign/verify throughput, parse latency) (see §Benchmarks)
 12. ✅ Async opaque keys for JWT: build with an `async_opaque_signer` and parse with `async_opaque_verifier` / `async_opaque_key_decrypter` (`claims_async`, `nested_jwt::decrypt_async`), reusing the allowlists and `understood` given at parse time so a caller can't widen them on a second call. (see §Async Opaque Keys)
 
 ---
@@ -750,3 +753,15 @@ Phase 3 item 10. Doxygen, configured by `docs/Doxyfile`, with `docs/mainpage.md`
 - **Warnings are errors in CI.** `WARN_IF_UNDOCUMENTED` is on, and a `docs` job on Ubuntu 24.04 (Doxygen 1.9.8, the oldest version tested) builds with `WARN_AS_ERROR = FAIL_ON_WARNINGS` and uploads the HTML as an artifact. Doxygen only warns about free functions in files that have an `@file` block, so every header has one. Doxygen 1.18 (Homebrew) is also warning-free.
 - **CMake.** `-DJOSE_BUILD_DOCS=ON` adds a `jose_docs` target (named so it can't clash with a parent project's `docs`) that writes a Doxyfile into the build directory (`@INCLUDE` of `docs/Doxyfile`, the output directory, `PROJECT_NUMBER` from `project(VERSION)`) and runs Doxygen from the source directory. `-DJOSE_DOCS_WARN_AS_ERROR=ON` sets `FAIL_ON_WARNINGS`. It's off by default, since a newer Doxygen may warn about things this one doesn't.
 - **Not done.** The reference isn't published (GitHub Pages or similar); that's a decision for the repository owner. Examples in the comments aren't compiled.
+
+---
+
+## Benchmarks
+
+Phase 3 item 11. `benchmarks/` holds a C++ runner (`jose_bench`), a go-jose v4 runner (`benchmarks/go`) and `compare.py`, which runs them in turn and prints a table. The results and how to read them are in `benchmarks/README.md`.
+
+- **Same work on both sides.** 40 cases: JWS sign and verify for HS256, RS256, PS256, ES256/384/512 and EdDSA, JWE encrypt and decrypt for dir, A256KW, RSA-OAEP-256 and ECDH-ES (with and without A256KW), JWT sign and verify, parse-only JWS and JWE, JWK parsing, and 64 KiB payloads for HS256 and A256GCM. Each case is the public API as an application calls it, serialization and parsing included. Both read the keys from `benchmarks/keys.json` and use the same 222-byte claims payload, and each checks its round trip before timing, so a case can't quietly measure an error path.
+- **Same timing loop.** No Google Benchmark or `testing.B`: each runner warms up for a quarter of a sample, sizes a batch to fill a sample (200 ms by default), times five batches and reports the median and the fastest. Writing it twice, about 40 lines each, keeps the two methods the same. `compare.py` alternates the sides (two rounds by default) and keeps each case's best median, so background load on one round doesn't decide a row.
+- **Builds.** `-DJOSE_BUILD_BENCH=ON` adds `jose_bench`, and CMake warns when the build type isn't optimized (only a status line when tests are on, as in CI); the binary reports `"optimized"` too. The `bench` and `bench-macos` presets are Release builds with only the library and `jose_bench`. ctest runs every case once (`bench.smoke`, plus `bench.go_smoke` with `JOSE_INTEROP_GO=ON`), so CI keeps both runners building and their round trips passing. CI doesn't record timings: shared runners are too noisy for them to mean anything.
+- **Found and fixed.** base64url, which every token goes through. Encoding appended one character at a time (a libc++ library call each); decoding first scanned the whole input for whitespace, so whitespace is reported ahead of any other error, and then branched on every character. A 64 KiB JWE took 203 µs to encrypt and 155 µs to decrypt, against go-jose's 47 µs and 43 µs. Now encoding writes into a presized buffer, decoding works four characters at a time from pre-shifted tables, and the whitespace scan runs only after a decode has failed (whitespace is outside the alphabet, so an input with any always fails, and the error is the same as before). The JWE now takes 31 µs and 30 µs. A test checks the codec against a bit-at-a-time reference for every length up to 200, an invalid character at every position in inputs up to 12 characters, every final character of 2- and 3-character tails, and whitespace winning over the other errors.
+- **Found and left as they are.** RSA `jwk` import takes 1.5 ms (public) and 19 ms (private) because of the §Key Validation checks (`EVP_PKEY_check` runs the SP 800-56B checks, primality tests included); go-jose checks size, exponent and `p*q == n` but no primality, and takes microseconds. ECDH-ES encryption is about 2.4 times slower than go-jose, mostly from building, serializing and then re-validating the `"epk"` header rather than from the key agreement. Both are measured and explained in `benchmarks/README.md`.
