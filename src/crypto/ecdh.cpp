@@ -141,6 +141,13 @@ auto generate_ephemeral_key(EVP_PKEY* peer) -> expected<evp_pkey_ptr> {
 // Compute the raw ECDH shared secret between a private key and a peer public key.
 auto compute_shared_secret(EVP_PKEY* privkey,
                            EVP_PKEY* peerkey) -> expected<secure_bytes> {
+    // OpenSSL reports a peer on another curve as an error, but a peer of
+    // another key type (an X25519 key against an EC key) trips an internal
+    // assertion in EVP_PKEY_derive_set_peer, which aborts in a debug build
+    // of OpenSSL (vcpkg's Debug libraries, for instance).
+    // Compared by key manager name, so provider-only key types count too.
+    if (EVP_PKEY_is_a(peerkey, EVP_PKEY_get0_type_name(privkey)) != 1)
+        return make_error(errc::invalid_key, "ECDH keys are of different types");
     auto ctx = make_evp_pkey_ctx(EVP_PKEY_CTX_new(privkey, nullptr));
     if (!ctx)
         return make_openssl_error("EVP_PKEY_CTX_new for derive");
