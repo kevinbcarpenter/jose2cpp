@@ -1,0 +1,1 @@
+{"aud":["api","web"],"exp":2000,"iat":1000,"iss":"https://issuer.example","jti":"token-1","nbf":1000,"sub":"kevin"}

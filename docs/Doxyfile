@@ -1,0 +1,47 @@
+# API reference for jose2cpp. Run from the repository root:
+#
+#     mkdir -p build/docs            # Doxygen creates only the last level
+#     doxygen docs/Doxyfile          # writes build/docs/html/index.html
+#
+# or configure with -DJOSE_BUILD_DOCS=ON and build the `jose_docs` target, which
+# writes to <build dir>/docs instead. Only the public headers are read; the
+# vendored expected-lite (include/jose/detail) and the jose::detail
+# namespaces are left out.
+
+PROJECT_NAME           = jose2cpp
+PROJECT_BRIEF          = "JOSE for C++20: JWS, JWE, JWK and JWT on OpenSSL 3"
+OUTPUT_DIRECTORY       = build/docs
+
+INPUT                  = docs/mainpage.md include/jose
+FILE_PATTERNS          = *.hpp
+RECURSIVE              = YES
+EXCLUDE                = include/jose/detail
+EXCLUDE_SYMBOLS        = jose::detail jose::*::detail
+STRIP_FROM_PATH        = include
+STRIP_FROM_INC_PATH    = include
+
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+BUILTIN_STL_SUPPORT    = YES
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+SORT_MEMBER_DOCS       = NO
+DISTRIBUTE_GROUP_DOC   = YES
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = NO
+
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+WARN_AS_ERROR          = NO
+
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_TREEVIEW      = YES
+HAVE_DOT               = NO
+SEARCHENGINE           = YES

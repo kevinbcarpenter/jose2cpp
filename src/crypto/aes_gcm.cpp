@@ -133,8 +133,8 @@ auto aes_gcm_decrypt(content_encryption enc, std::span<const uint8_t> cek,
     int final_len = 0;
     if (EVP_DecryptFinal_ex(ctx.get(), plaintext.data() + out_len,
                             &final_len) != 1)
-        return make_error(errc::decryption_failed,
-                          "AES-GCM authentication failed");
+        return make_crypto_failure(errc::decryption_failed,
+                                   "AES-GCM authentication failed");
 
     plaintext.resize(static_cast<size_t>(out_len + final_len));
     return plaintext;

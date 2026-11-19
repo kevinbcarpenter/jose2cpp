@@ -1,16 +1,26 @@
 #pragma once
 
-// Umbrella header — include this to get the full library.
-//
-// Most code only needs the unified entry points:
-//   jose::sign / jose::verify              (jose/crypto/signing.hpp)
-//   jose::encrypt / jose::decrypt          (jose/crypto/encryption.hpp)
-//   jose::generate_*_key / random_bytes    (jose/crypto/keygen.hpp)
+/// @file
+/// Umbrella header: include this to get the full library.
+///
+/// Most code wants jose::jwt (jwt.hpp) for tokens, jose::jws and jose::jwe
+/// (jws.hpp, jwe.hpp) for signing and encryption in general, and
+/// jose::jwk (jwk.hpp) for keys. The algorithms underneath are in
+/// jose/crypto/: jose::sign and jose::verify (signing.hpp), jose::encrypt
+/// and jose::decrypt (encryption.hpp), and key generation (keygen.hpp).
 
 #include "jose/algorithm.hpp"
+#include "jose/async.hpp"
 #include "jose/base64url.hpp"
 #include "jose/error.hpp"
+#include "jose/header.hpp"
+#include "jose/jwe.hpp"
+#include "jose/jwk.hpp"
+#include "jose/jws.hpp"
+#include "jose/jwt.hpp"
+#include "jose/opaque.hpp"
 #include "jose/secure_bytes.hpp"
+#include "jose/task.hpp"
 #include "jose/version.hpp"
 
 #include "jose/crypto/encryption.hpp"

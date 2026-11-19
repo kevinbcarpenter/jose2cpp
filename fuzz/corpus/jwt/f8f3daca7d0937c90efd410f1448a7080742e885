@@ -1,0 +1,1 @@
+{"aud":["api","web"],"ctx":{"levels":[1,2,3],"role":"admin"},"exp":1900000000,"iss":"https://issuer.example","name":"Kevin \u2713","nbf":1700000000,"sub":"kevin"}

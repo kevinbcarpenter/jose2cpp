@@ -62,8 +62,8 @@ auto eddsa_verify(EVP_PKEY* key,
     // One-shot verification (required for EdDSA — Update/Final is not supported)
     if (EVP_DigestVerify(ctx.get(), signature.data(), signature.size(),
                          data.data(), data.size()) != 1)
-        return make_error(errc::invalid_signature,
-                          "EdDSA signature verification failed");
+        return make_crypto_failure(errc::invalid_signature,
+                                   "EdDSA signature verification failed");
 
     return {};
 }

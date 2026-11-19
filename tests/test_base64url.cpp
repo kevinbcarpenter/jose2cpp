@@ -3,6 +3,7 @@
 #include "jose/base64url.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -206,4 +207,105 @@ TEST_CASE("base64url non-zero trailing bits return error", "[base64url]") {
     auto result = base64url::decode("Zh");
     REQUIRE_FALSE(result.has_value());
     CHECK(result.error().code == errc::invalid_base64);
+}
+
+namespace {
+
+// A plain bit-accumulator codec (the decoder is the one base64url.cpp used
+// before it went four characters at a time); the fast paths must agree with
+// it exactly.
+constexpr std::string_view reference_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+auto reference_encode(const std::vector<uint8_t>& in) -> std::string {
+    std::string out;
+    uint32_t accum = 0;
+    int bits = 0;
+    for (uint8_t b : in) {
+        accum = (accum << 8) | b;
+        bits += 8;
+        while (bits >= 6) {
+            bits -= 6;
+            out += reference_alphabet[(accum >> bits) & 0x3F];
+        }
+    }
+    if (bits > 0) out += reference_alphabet[(accum << (6 - bits)) & 0x3F];
+    return out;
+}
+
+// std::nullopt where decode must fail.
+auto reference_decode(std::string_view in) -> std::optional<std::vector<uint8_t>> {
+    if (in.size() % 4 == 1) return std::nullopt;
+    std::vector<uint8_t> out;
+    uint32_t accum = 0;
+    int bits = 0;
+    for (char c : in) {
+        auto pos = reference_alphabet.find(c);
+        if (pos == std::string_view::npos) return std::nullopt;
+        accum = (accum << 6) | static_cast<uint32_t>(pos);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<uint8_t>(accum >> bits));
+        }
+    }
+    if (bits > 0 && (accum & ((1u << bits) - 1)) != 0) return std::nullopt;
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("base64url matches a bit-at-a-time reference", "[base64url]") {
+    SECTION("encode and decode, every length to 200") {
+        uint32_t state = 12345;
+        for (size_t len = 0; len <= 200; ++len) {
+            std::vector<uint8_t> in(len);
+            for (auto& b : in) b = static_cast<uint8_t>((state = state * 1103515245 + 12345) >> 16);
+            auto encoded = base64url::encode(std::span<const uint8_t>(in));
+            REQUIRE(encoded == reference_encode(in));
+            auto decoded = base64url::decode(encoded);
+            REQUIRE(decoded.has_value());
+            CHECK(std::vector<uint8_t>(decoded->begin(), decoded->end()) == in);
+        }
+    }
+
+    SECTION("an invalid character anywhere is reported by name") {
+        for (size_t len : {2u, 3u, 4u, 6u, 7u, 8u, 10u, 11u, 12u}) {
+            for (size_t at = 0; at < len; ++at) {
+                std::string text(len, 'A');
+                text[at] = '!';
+                auto result = base64url::decode(text);
+                REQUIRE_FALSE(result.has_value());
+                CHECK(result.error().code == errc::invalid_base64);
+                CHECK(result.error().message == "invalid base64url character: '!'");
+            }
+        }
+        // The first bad character wins, wherever the group boundary falls.
+        auto result = base64url::decode("AAA=AA+A");
+        REQUIRE_FALSE(result.has_value());
+        CHECK(result.error().message == "invalid base64url character: '='");
+    }
+
+    SECTION("whitespace is reported first, whatever else is wrong") {
+        for (std::string_view text : {"Zm9 vYg", "Zm9v Y", "!A A", "AAAA AA!", "Zh ", "\tQUJD"}) {
+            auto result = base64url::decode(text);
+            REQUIRE_FALSE(result.has_value());
+            CHECK(result.error().code == errc::invalid_base64);
+            CHECK(result.error().message.starts_with("whitespace inside base64url"));
+        }
+    }
+
+    SECTION("every final character of a 2- and 3-character tail") {
+        for (std::string prefix : {"", "QUJD"}) {
+            for (std::string tail_start : {"Q", "QU"}) {
+                for (char last : reference_alphabet) {
+                    auto text = prefix + tail_start + last;
+                    auto want = reference_decode(text);
+                    auto got = base64url::decode(text);
+                    REQUIRE(got.has_value() == want.has_value());
+                    if (want) CHECK(std::vector<uint8_t>(got->begin(), got->end()) == *want);
+                    else CHECK(got.error().message == "non-zero trailing bits in base64url");
+                }
+            }
+        }
+    }
 }

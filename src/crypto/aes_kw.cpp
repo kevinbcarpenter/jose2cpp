@@ -95,14 +95,14 @@ auto aes_key_unwrap(key_algorithm alg, std::span<const uint8_t> kek,
     if (EVP_DecryptUpdate(ctx.get(), out.data(), &out_len,
                           encrypted_key.data(),
                           static_cast<int>(encrypted_key.size())) != 1)
-        return make_error(errc::decryption_failed,
-                          "AES key unwrap failed (integrity check)");
+        return make_crypto_failure(errc::decryption_failed,
+                                   "AES key unwrap failed (integrity check)");
 
     int final_len = 0;
     if (EVP_DecryptFinal_ex(ctx.get(), out.data() + out_len,
                             &final_len) != 1)
-        return make_error(errc::decryption_failed,
-                          "AES key unwrap finalize failed");
+        return make_crypto_failure(errc::decryption_failed,
+                                   "AES key unwrap finalize failed");
 
     out.resize(static_cast<size_t>(out_len + final_len));
     return out;
