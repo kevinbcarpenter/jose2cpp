@@ -11,6 +11,7 @@
 #include <openssl/evp.h>
 #include <openssl/param_build.h>
 #include <openssl/pem.h>
+#include <openssl/rsa.h>
 #include <openssl/x509.h>
 
 #include <algorithm>
@@ -343,6 +344,57 @@ auto run_check(EVP_PKEY* key, bool priv) -> expected<void> {
     return {};
 }
 
+constexpr auto odd_primes_below_1024 = [] {
+    std::array<BN_ULONG, 171> out{};
+    std::size_t i = 0;
+    for (BN_ULONG p = 3; p < 1024; p += 2) {
+        bool prime = true;
+        for (BN_ULONG f = 3; f * f <= p; f += 2)
+            if (p % f == 0) prime = false;
+        if (prime) out[i++] = p;
+    }
+    return out;
+}();
+static_assert(odd_primes_below_1024.back() == 1021);
+
+// The checks on an RSA public key. OpenSSL's EVP_PKEY_public_check isn't
+// used: after its small-factor test it runs a Miller-Rabin test on n with
+// random bases and refuses n if a base happens to expose a factor. That
+// proves n is bad, but whether a base finds one is chance, so a modulus with
+// a mid-sized factor p, where p - 1 shares a lot with n - 1, passes on some
+// calls and fails on others (the fuzzer found one with a 50% split). Every
+// check here gives the same answer every time.
+auto rsa_public_check(EVP_PKEY* key) -> expected<void> {
+    BIGNUM* raw_n = nullptr;
+    BIGNUM* raw_e = nullptr;
+    const bool got = EVP_PKEY_get_bn_param(key, OSSL_PKEY_PARAM_RSA_N, &raw_n) == 1 &&
+                     EVP_PKEY_get_bn_param(key, OSSL_PKEY_PARAM_RSA_E, &raw_e) == 1;
+    bn_ptr n(raw_n, BN_clear_free);
+    bn_ptr e(raw_e, BN_clear_free);
+    if (!got) return make_crypto_failure(errc::invalid_key, "RSA key has no modulus or exponent");
+
+    // The limits OpenSSL's own check applies (outside FIPS mode, where e = 3
+    // is still allowed for older keys).
+    if (BN_num_bits(n.get()) > OPENSSL_RSA_MAX_MODULUS_BITS)
+        return invalid("RSA modulus is larger than " +
+                       std::to_string(OPENSSL_RSA_MAX_MODULUS_BITS) + " bits");
+    if (!BN_is_odd(n.get())) return invalid("RSA modulus is even");
+    if (!BN_is_odd(e.get()) || BN_is_one(e.get()) || BN_cmp(e.get(), n.get()) >= 0)
+        return invalid("RSA public exponent must be odd and between 1 and the modulus");
+
+    // No prime factor below 1024. OpenSSL stops at 751; going a little
+    // further is cheap (one word division per prime). There's no test that
+    // n isn't prime: it costs a 2048-bit modular exponentiation (0.9 ms of
+    // a 1 ms import) and only catches a key its own supplier broke.
+    for (const auto p : odd_primes_below_1024) {
+        const BN_ULONG r = BN_mod_word(n.get(), p);
+        if (r == static_cast<BN_ULONG>(-1)) return make_openssl_error("BN_mod_word");
+        if (r == 0) return invalid("RSA modulus has a small prime factor");
+    }
+
+    return {};
+}
+
 // PLAN.md §Key Validation: RSA >= 2048 bits and internally consistent; EC
 // points on the declared curve (and d matching); OKP sizes per curve.
 // `validate` false skips the OpenSSL key checks, for exporting a key this
@@ -357,8 +409,15 @@ auto inspect_and_validate(EVP_PKEY* key, bool validate = true) -> expected<key_f
             return make_error(errc::key_size_too_small,
                               "RSA keys must be at least 2048 bits (got " + std::to_string(bits) + ")");
         const bool priv = has_bn_param(key, OSSL_PKEY_PARAM_RSA_D);
-        if (validate)
-            if (auto r = run_check(key, priv); !r) return jose::unexpected(r.error());
+        if (validate) {
+            // A private key gets OpenSSL's full check: p * q == n, d and the
+            // CRT values against p and q, and p and q prime. That includes
+            // the public check described above, which a real key passes
+            // every time (PLAN.md §Key Validation has the odd case that
+            // might not).
+            auto r = priv ? run_check(key, true) : rsa_public_check(key);
+            if (!r) return jose::unexpected(r.error());
+        }
         return key_facts{kty::RSA, priv, std::nullopt, std::nullopt};
     }
 

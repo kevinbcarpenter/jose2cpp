@@ -4,6 +4,7 @@
 #include "support/test_support.hpp"
 
 #include <openssl/bio.h>
+#include <openssl/bn.h>
 #include <openssl/core_names.h>
 #include <openssl/encoder.h>
 #include <openssl/err.h>
@@ -222,6 +223,89 @@ TEST_CASE("RSA JWK validation", "[jwk][validation][rsa]") {
 
         CHECK(jwk::from_pkey(std::move(weak)).error().code == errc::key_size_too_small);
         CHECK(jwk::from_pem(pem).error().code == errc::key_size_too_small);
+    }
+}
+
+TEST_CASE("RSA public key checks give the same answer every time", "[jwk][validation][rsa]") {
+    ERR_clear_error();
+    auto pub = rfc_key("RFC 7517 Appendix A.2", "RSA");
+    for (const auto& m : k_private_members) pub.erase(m);
+    REQUIRE(jwk::from_json(pub).has_value());
+
+    const auto n_bytes = b64(pub["n"]);
+    std::unique_ptr<BIGNUM, decltype(&BN_free)> n{
+        BN_bin2bn(n_bytes.data(), static_cast<int>(n_bytes.size()), nullptr), BN_free};
+    REQUIRE(n);
+    auto with_n = [&](const BIGNUM* value) {
+        std::vector<uint8_t> bytes(static_cast<size_t>(BN_num_bytes(value)));
+        BN_bn2bin(value, bytes.data());
+        auto j = pub;
+        j["n"] = b64u(bytes);
+        return j;
+    };
+
+    SECTION("a modulus that OpenSSL's check passed only half the time") {
+        // From the fuzzer: n has the factors 2521, 9419 and 29989. With 2521
+        // in it, half of all Miller-Rabin bases expose a factor, and
+        // EVP_PKEY_public_check refused n on about half of its calls. It's
+        // composite with no factor below 1024, so it's accepted, every time.
+        auto j = pub;
+        j["n"] =
+        "vrjOfz9Ccdgx5nQudyhdoR17V-IubWMeOZCwX_jj0hgAsz2J_pqYW08PLbK_PdiVGKPrqzmD"
+        "IsLI7sA25VEnHU1uCLNwBuUiCO11_-7dYbsr4iJmG0Qu2j8DsVyT1azpJC_NG84Ty5KKthuC"
+        "aPod7iI7w0LK9orSMhBEwwZDCxTWq4aYWAchc8t-emd9qOvWtVMDC1BXksRngh6X5bUYLy6A"
+        "yHKvj-nUy1wgzjYQDwHMTplCoLtU-o-8SNnZ1tmRoGE9uJkBLdh5gFENabWnU5m1ZqZPdwS-"
+        "qo-meMvVfJb6jJVWRpl2SUtCnYG2C32qvbWbjZ_jBPD5eunqsIo1vQ";
+        for (int i = 0; i < 64; ++i) CHECK(jwk::from_json(j).has_value());
+    }
+
+    SECTION("an even modulus") {
+        std::unique_ptr<BIGNUM, decltype(&BN_free)> even{BN_dup(n.get()), BN_free};
+        REQUIRE(BN_sub_word(even.get(), 1) == 1);
+        CHECK(parse_error(with_n(even.get())) == errc::invalid_key);
+    }
+
+    SECTION("a modulus whose only small prime factor is 1021") {
+        // 1021 is the largest prime checked and above OpenSSL's 751, so this
+        // fails if the table is cut short. Start from the largest odd
+        // multiple of 1021 below n and step down by 2 * 1021 until no
+        // smaller odd prime divides it.
+        auto only_1021 = [](const BIGNUM* v) {
+            for (BN_ULONG p = 3; p < 1021; p += 2) {
+                bool prime = true;
+                for (BN_ULONG f = 3; f * f <= p; f += 2)
+                    if (p % f == 0) prime = false;
+                if (prime && BN_mod_word(v, p) == 0) return false;
+            }
+            return BN_mod_word(v, 1021) == 0;
+        };
+        std::unique_ptr<BIGNUM, decltype(&BN_free)> m{BN_dup(n.get()), BN_free};
+        REQUIRE(BN_sub_word(m.get(), BN_mod_word(m.get(), 1021)) == 1);
+        if (!BN_is_odd(m.get())) REQUIRE(BN_sub_word(m.get(), 1021) == 1);
+        int steps = 0;
+        while (!only_1021(m.get()) && steps++ < 10000) REQUIRE(BN_sub_word(m.get(), 2 * 1021) == 1);
+        REQUIRE(only_1021(m.get()));
+        REQUIRE(BN_is_odd(m.get()));
+        REQUIRE(BN_num_bits(m.get()) == 2048);
+        CHECK(parse_error(with_n(m.get())) == errc::invalid_key);
+    }
+
+    SECTION("bad public exponents") {
+        for (const auto* e : {"AQ" /* 1 */, "AQAA" /* 65536, even */})
+        {
+            auto j = pub;
+            j["e"] = e;
+            CHECK(parse_error(j) == errc::invalid_key);
+        }
+        auto j = pub;
+        j["e"] = pub["n"]; // e == n
+        CHECK(parse_error(j) == errc::invalid_key);
+    }
+
+    SECTION("e = 3 is still accepted, as OpenSSL accepted it") {
+        auto j = pub;
+        j["e"] = "Aw";
+        CHECK(jwk::from_json(j).has_value());
     }
 }
 

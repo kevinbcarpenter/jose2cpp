@@ -113,10 +113,16 @@ above 1 means jose2cpp is faster.
 | jwt.verify/HS256 | 3.3 µs | 6.3 µs | 1.88 |
 | jwt.sign/ES256 | 13.7 µs | 16.8 µs | 1.22 |
 | jwt.verify/ES256 | 33.6 µs | 38.7 µs | 1.15 |
-| jwk.parse/RSA-2048-public | 1.52 ms | 2.3 µs | 0.00 |
+| jwk.parse/RSA-2048-public ¹ | 37.9 µs | 2.6 µs | 0.07 |
 | jwk.parse/RSA-2048-private | 18.95 ms | 115.2 µs | 0.01 |
 | jwk.parse/EC-P256-public | 6.9 µs | 1.4 µs | 0.20 |
 | jwk.parse/EC-P256-private | 11.0 µs | 1.8 µs | 0.17 |
+
+¹ Measured again on 2026-11-19, the same way, after RSA public keys moved
+off `EVP_PKEY_public_check` (below); it was 1.52 ms. Both sides of this
+row come from that run. The machine was slower that day, every row 5 to
+15% on both sides (go-jose's time for this row went from 2.3 µs to
+2.6 µs), so only this row was replaced.
 
 ## Reading them
 
@@ -136,11 +142,14 @@ jose2cpp less, up to 3.0 µs less for `jwt.verify/HS256` (3.3 µs against
 One row stands out. The proportions below come from macOS `sample`
 profiles of `jose_bench` running one case.
 
-- **`jwk.parse` for RSA: 1.5 ms public, 19 ms private.** jose2cpp validates
-  every key it imports (PLAN.md §Key Validation) with OpenSSL's
-  `EVP_PKEY_public_check` / `EVP_PKEY_check`, which for RSA run the SP
-  800-56B checks, primality tests included. go-jose checks an RSA key's size
-  and exponent and, for a private key, that `p*q == n` and
+- **`jwk.parse` for RSA: 38 µs public, 19 ms private.** jose2cpp validates
+  every key it imports (PLAN.md §Key Validation). A private RSA key gets
+  OpenSSL's `EVP_PKEY_check`, the SP 800-56B checks with primality tests on
+  `p` and `q`. A public one gets jose2cpp's own checks (size, odd `n`, the
+  range of `e`, no prime factor below 1024). It used to get
+  `EVP_PKEY_public_check`, which took 1.5 ms and could give a different
+  answer for the same odd modulus on each call. go-jose checks an RSA key's
+  size and exponent and, for a private key, that `p*q == n` and
   `rsa.PrivateKey.Validate` passes, but runs no primality tests. A key is
   normally parsed once and used many times, and the JWKS fetcher parses a set
   only when it refreshes, so this is a cost per key, not per token. EC keys
