@@ -97,6 +97,7 @@ jobs:
       - name: Build the API reference
         run: |
           doxygen --version
+          mkdir -p build/docs
           ( cat docs/Doxyfile; echo "WARN_AS_ERROR = FAIL_ON_WARNINGS" ) | doxygen -
 
       - uses: actions/upload-artifact@v4

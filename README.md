@@ -506,6 +506,7 @@ Every public header is documented for Doxygen (tested with 1.9.8 and 1.18).
 From the repository root:
 
 ```sh
+mkdir -p build/docs                # Doxygen won't create both levels itself
 doxygen docs/Doxyfile              # writes build/docs/html/index.html
 ```
 

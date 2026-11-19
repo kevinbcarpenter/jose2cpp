@@ -1,5 +1,6 @@
 # API reference for jose2cpp. Run from the repository root:
 #
+#     mkdir -p build/docs            # Doxygen creates only the last level
 #     doxygen docs/Doxyfile          # writes build/docs/html/index.html
 #
 # or configure with -DJOSE_BUILD_DOCS=ON and build the `jose_docs` target, which
