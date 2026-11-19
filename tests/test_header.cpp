@@ -250,6 +250,44 @@ TEST_CASE("jwk and epk must be public asymmetric keys", "[header][validation]") 
     }
 }
 
+TEST_CASE("set() and join_headers re-validate a replaced jwk or epk", "[header][epk]") {
+    // header::set and join_headers copy an already-parsed "jwk"/"epk" when
+    // its JSON is unchanged. This checks the safety side: a different value,
+    // or one put back after erase(), is parsed and validated again.
+    const auto a = jwk::generate_ec(ec_curve::P256);
+    const auto b = jwk::generate_ec(ec_curve::P384);
+    REQUIRE(a.has_value());
+    REQUIRE(b.has_value());
+
+    for (const char* name : {"jwk", "epk"}) {
+        INFO(name);
+        auto h = hdr({{"alg", "ECDH-ES"}, {name, public_json(*a)}});
+        auto key = [&](const header& x) { return std::string_view(name) == "jwk" ? x.jwk() : x.epk(); };
+
+        REQUIRE(h.set("kid", "1").has_value()); // reused
+        REQUIRE(key(h).has_value());
+        CHECK(*key(h)->thumbprint() == *a->thumbprint());
+
+        REQUIRE(h.set(name, public_json(*b)).has_value()); // replaced: parsed afresh
+        REQUIRE(h.erase(name));
+        CHECK_FALSE(key(h).has_value());
+        REQUIRE(h.set(name, public_json(*b)).has_value()); // erased, then set again
+        REQUIRE(key(h).has_value());
+        CHECK(key(h)->ec_crv() == ec_curve::P384);
+        CHECK(*key(h)->thumbprint() == *b->thumbprint());
+
+        json broken = public_json(*b);
+        broken["x"] = b64u(std::vector<uint8_t>(48, 0xff));
+        CHECK(h.set(name, broken).error().code == errc::invalid_header);
+        CHECK(*key(h)->thumbprint() == *b->thumbprint()); // unchanged on failure
+
+        auto joined = join_headers(header_context::jwe, hdr({{"enc", "A256GCM"}}), {}, h);
+        REQUIRE(joined.has_value());
+        REQUIRE(key(*joined).has_value());
+        CHECK(*key(*joined)->thumbprint() == *b->thumbprint());
+    }
+}
+
 TEST_CASE("x5c and its thumbprints", "[header][validation][x5c]") {
     const auto ec = jwk::generate_ec(ec_curve::P256);
     REQUIRE(ec.has_value());

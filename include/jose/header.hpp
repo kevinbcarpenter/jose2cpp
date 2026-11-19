@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <optional>
 #include <set>
 #include <string>
@@ -149,6 +150,14 @@ public:
     ///@}
 
 private:
+    /// from_json, but a "jwk", "epk" or "x5c" whose JSON is identical to
+    /// one a `known` header already parsed is copied from it, not parsed
+    /// and validated again.
+    static auto from_json_reusing(nlohmann::json j, std::initializer_list<const header*> known) -> expected<header>;
+    friend auto join_headers(header_context ctx, const header& protected_header, const header& shared_unprotected,
+                             const header& per_recipient, const extension_set& understood) -> expected<header>;
+    friend class jwe;
+
     [[nodiscard]] auto str(std::string_view name) const -> std::optional<std::string_view>;
     [[nodiscard]] auto bytes(std::string_view name) const -> std::optional<std::vector<uint8_t>>;
 
