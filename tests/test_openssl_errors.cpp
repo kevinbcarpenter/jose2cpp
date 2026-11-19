@@ -118,7 +118,8 @@ TEST_CASE("OpenSSL errors report the current failure, not a stale one", "[openss
     REQUIRE_FALSE(stale.empty());
 
     auto a = generate_ec_key(ec_curve::P256).value();
-    auto b = generate_okp_key(okp_curve::X25519).value();
+    // A peer on another curve: OpenSSL itself refuses it.
+    auto b = generate_ec_key(ec_curve::P384).value();
     auto r = ecdh_derive_key_from_epk(a.get(), b.get(), "ECDH-ES", "", "", 128);
     REQUIRE_FALSE(r);
     REQUIRE(r.error().code == errc::openssl_error);

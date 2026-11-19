@@ -508,8 +508,12 @@ TEST_CASE("ECDH-ES rejects mismatched curves", "[encryption][ecdh]") {
 
     REQUIRE_FALSE(ecdh_derive_key_from_epk(p256.get(), p384.get(), "ECDH-ES",
                                            "", "", 128).has_value());
-    REQUIRE_FALSE(ecdh_derive_key_from_epk(p256.get(), x25519.get(), "ECDH-ES",
-                                           "", "", 128).has_value());
+    auto other_type = ecdh_derive_key_from_epk(p256.get(), x25519.get(), "ECDH-ES", "", "", 128);
+    REQUIRE_FALSE(other_type.has_value());
+    CHECK(other_type.error().code == errc::invalid_key);
+    auto other_way = ecdh_derive_key_from_epk(x25519.get(), p256.get(), "ECDH-ES", "", "", 128);
+    REQUIRE_FALSE(other_way.has_value());
+    CHECK(other_way.error().code == errc::invalid_key);
 }
 
 TEST_CASE("ECDH-ES derived key length matches request", "[encryption][ecdh]") {

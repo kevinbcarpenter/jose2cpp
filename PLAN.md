@@ -447,41 +447,17 @@ High-level JWT API and production readiness.
 
 ## Build System
 
-```cmake
-cmake_minimum_required(VERSION 3.20)
-project(jose2cpp VERSION 0.1.0 LANGUAGES CXX)
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+CMake 3.21 or later (for `PROJECT_IS_TOP_LEVEL`). The top-level `CMakeLists.txt` builds one library target, `jose2cpp`, with the aliases `jose2cpp::jose2cpp` and `jose::jose`. OpenSSL (libcrypto only) and nlohmann_json are public dependencies, and zlib is private. The C++ standard and the `jose::expected` choice are public too (`cxx_std_23` or `cxx_std_20`, plus `nsel_CONFIG_SELECT_EXPECTED`), so whatever links the library compiles against the same `expected` type. The test, benchmark, fuzz, CLI and docs targets are behind the options listed in the README.
 
-find_package(OpenSSL 3.0 REQUIRED)
-find_package(nlohmann_json REQUIRED)
-find_package(ZLIB REQUIRED)
-find_package(Catch2 3 REQUIRED)
+Packaging (README §Using jose2cpp in your project):
 
-add_library(jose
-    src/base64url.cpp
-    src/algorithm.cpp
-    src/jwk.cpp
-    src/jws.cpp
-    src/jwe.cpp
-    src/jwt.cpp
-    src/header.cpp
-    src/crypto/rsa.cpp
-    src/crypto/ec.cpp
-    src/crypto/eddsa.cpp
-    src/crypto/x25519_x448.cpp
-    src/crypto/hmac.cpp
-    src/crypto/aes_kw.cpp
-    src/crypto/aes_gcm_kw.cpp
-    src/crypto/aes_cbc_hmac.cpp
-    src/crypto/aes_gcm.cpp
-    src/crypto/ecdh.cpp
-    src/crypto/pbes2.cpp
-    src/crypto/openssl_util.cpp
-)
-target_link_libraries(jose PUBLIC OpenSSL::SSL OpenSSL::Crypto nlohmann_json::nlohmann_json)
-target_include_directories(jose PUBLIC include)
-```
+- **Name.** Everything installed is `jose2cpp`: `libjose2cpp.{a,so,dylib}`, `find_package(jose2cpp)` with `lib/cmake/jose2cpp/`, and `jose2cpp.pc`. Not `jose`: Debian and Ubuntu ship latchset's C library as `libjose` with `jose.pc` and headers in `/usr/include/jose/` (clevis, tang and sssd depend on it). Their headers are `.h` and ours `.hpp`, so the shared include directory has no overlapping files; the library file and pkg-config name would have collided. The namespace and `<jose/...>` include paths stay.
+- **Versions.** `write_basic_package_version_file` with `SameMinorVersion`, and the shared library's `SOVERSION` is `major.minor` (`libjose2cpp.so.0.1`), because before 1.0 a minor release may break the API and ABI. Both move to the major version at 1.0. `vcpkg.json`'s `"version"` has to be kept in step with `project(VERSION)` by hand.
+- **As a subproject.** With `add_subdirectory` or FetchContent, `JOSE_BUILD_TESTS` and `JOSE_INSTALL` default to off, so a consumer doesn't need Catch2 and doesn't install jose2cpp along with itself.
+- **pkg-config.** `jose2cpp.pc` finds its prefix from its own location (`${pcfiledir}`), so an install moved with `cmake --install --prefix` still works. If `CMAKE_INSTALL_LIBDIR` or `CMAKE_INSTALL_INCLUDEDIR` is absolute (Nix, some distro builds), it writes the full paths instead and isn't relocatable. It carries the `nsel_CONFIG_SELECT_EXPECTED` define and requires `libcrypto >= 3.0` and `nlohmann_json`, with `zlib` in `Requires.private` for static links. The `-std=` flag isn't in it; a comment in the file says which standard the build used.
+- **vcpkg manifest.** `vcpkg.json` has a `builtin-baseline` (the 2026.10.16 vcpkg release); without one, vcpkg refuses `version>=` constraints, so the `vcpkg` preset hadn't worked before. Catch2 is the `tests` feature, which the preset turns on. Running the preset for the first time found a bug: vcpkg's Debug OpenSSL keeps its internal assertions, and `ecdh_derive_key_from_epk` given keys of two types (EC and X25519) aborted inside `EVP_PKEY_derive_set_peer` instead of returning an error. The JWE layer already refused such an `"epk"` before deriving, so only direct calls reached it. `compute_shared_secret` now refuses mismatched key types itself with `errc::invalid_key`; a peer on another curve of the same type is still left to OpenSSL, which reports it as an error. The whole suite passes under the vcpkg preset (OpenSSL 3.6.5, Catch2 3.16.0).
+- **Not done.** No vcpkg port or Conan recipe yet, since a port has to point at a release tag. No `DEBUG_POSTFIX`, so Debug and Release can't share a prefix (the README says to install one per prefix). No symbol visibility control: the shared library exports internal namespaces (`jose::detail`, `jose::internal`, `jose::crypto`) as well as the public API, and there are no Windows DLL exports.
+- **Tested.** `tests/package/run.sh` (CI job `package`) installs four builds (static; shared; static with `JOSE_USE_STD_EXPECTED=OFF`, consumed with `-std=c++20`; shared with an absolute `CMAKE_INSTALL_LIBDIR`), builds `tests/package` against each through `find_package` (with both target names) and pkg-config, then builds it from the source tree with `add_subdirectory` and checks that no tests or install rules came along.
 
 ---
 
@@ -491,7 +467,7 @@ target_include_directories(jose PUBLIC include)
 2. **JWKS fetching** — Yes, as an optional async component with pluggable HTTP backend. Not in core, no HTTP dependency in the main library.
 3. **Namespace** — `jose::` (clean, matches the standard).
 4. **Minimum OpenSSL version** — 3.0+ only. 1.1.1 is EOL.
-5. **CMake install/pkg-config** — Yes, ship as a proper CMake package with `find_package(jose)` from day one.
+5. **CMake install/pkg-config** — Yes, ship as a proper CMake package from day one. Installed as `jose2cpp` (`find_package(jose2cpp)`, `jose2cpp.pc`) to stay clear of latchset's `libjose`; see §Build System.
 6. **Async/coroutine support** — Targeted: core crypto stays synchronous, async applied only to opaque signer/decrypter interfaces (for KMS/HSM) and the optional JWKS fetcher. Custom `task<T>` type, no external coroutine library dependency.
 
 ---

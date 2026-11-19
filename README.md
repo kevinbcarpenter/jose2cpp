@@ -491,7 +491,8 @@ or use the **vcpkg** option above to get Catch2 3.x. OpenSSL 3 and nlohmann-json
 
 | Option              | Default | Description                          |
 | ------------------- | ------- | ------------------------------------ |
-| `JOSE_BUILD_TESTS`  | `ON`    | Build the Catch2 test suite          |
+| `JOSE_BUILD_TESTS`  | `ON` at top level | Build the Catch2 test suite (`OFF` when jose2cpp is pulled into another build) |
+| `JOSE_INSTALL`      | `ON` at top level | Add install rules for the library, headers, CMake package and pkg-config file (`OFF` when pulled into another build) |
 | `JOSE_BUILD_BENCH`  | `OFF`   | Build `jose_bench` (see [Benchmarks](#benchmarks)) |
 | `JOSE_BUILD_CLI`    | `OFF`   | Build `jose-cli` (see [Command line](#command-line)) |
 | `JOSE_FUZZ`         | `OFF`   | Build the fuzz targets (see [Fuzzing](#fuzzing)) |
@@ -499,6 +500,66 @@ or use the **vcpkg** option above to get Catch2 3.x. OpenSSL 3 and nlohmann-json
 | `JOSE_DOCS_WARN_AS_ERROR` | `OFF` | Make the `jose_docs` target fail on any Doxygen warning |
 | `JOSE_INTEROP_GO`   | `OFF`   | Add live go-jose interop tests to ctest (needs Go; see [tests/interop](tests/interop/README.md)) |
 | `JOSE_USE_STD_EXPECTED` | `AUTO` | `jose::expected` implementation: `AUTO` probes for C++23 `std::expected` and falls back to the vendored [expected-lite](https://github.com/martinmoene/expected-lite) on C++20; `ON`/`OFF` force one. The choice is exported as a public compile definition so consumers always match the library build. |
+
+### Using jose2cpp in your project
+
+Installing puts the library, the headers, a CMake package and a pkg-config
+file under a prefix:
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DJOSE_BUILD_TESTS=OFF
+cmake --build build
+cmake --install build --prefix /usr/local    # add -DBUILD_SHARED_LIBS=ON above for a shared library
+```
+
+Then in your CMakeLists.txt:
+
+```cmake
+find_package(jose2cpp 0.1 REQUIRED)
+target_link_libraries(my_app PRIVATE jose2cpp::jose2cpp)   # jose::jose works too
+```
+
+Or build it as part of your project with FetchContent, which skips the
+tests and the install rules. `v0.1.0` is the first release tag; until it's
+pushed, use `develop`:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(jose2cpp
+    GIT_REPOSITORY https://github.com/kevinbcarpenter/jose2cpp.git
+    GIT_TAG v0.1.0)
+FetchContent_MakeAvailable(jose2cpp)
+target_link_libraries(my_app PRIVATE jose2cpp::jose2cpp)
+```
+
+Without CMake, use `pkg-config --cflags --libs jose2cpp` (add `--static` for
+the static library) and compile with `-std=c++23`, or `-std=c++20` if the
+library was built against expected-lite. The `.pc` file says which. On
+macOS, Homebrew's `openssl@3` isn't linked into `/opt/homebrew`, so put
+`$(brew --prefix openssl@3)/lib/pkgconfig` on `PKG_CONFIG_PATH` too.
+
+A few things worth knowing:
+
+- Everything installed is named `jose2cpp`: `libjose2cpp`,
+  `find_package(jose2cpp)`, `jose2cpp.pc`. Debian and Ubuntu already ship
+  latchset's C library as `libjose` and `jose.pc` (clevis and tang use it),
+  so plain `jose` would collide. The headers are still `<jose/...hpp>` and
+  the namespace is still `jose`.
+- OpenSSL 3, nlohmann-json and zlib have to be findable by your build too;
+  the CMake package looks them up with `find_dependency`.
+- Pre-1.0, each minor release may break the API and ABI, so
+  `find_package(jose2cpp 0.1)` won't accept 0.2, and the shared library's
+  soname is `libjose2cpp.so.0.1`.
+- Install one build type per prefix. Debug and Release builds use the same
+  file name, so the second install replaces the first.
+- It's built and tested on Linux and macOS. Nothing builds it on Windows
+  yet, and the shared library has no DLL exports, so a Windows shared build
+  wouldn't link.
+
+CI checks all of this on every push: `tests/package/run.sh` installs four
+builds (static, shared, a C++20 expected-lite build, and one with an absolute
+libdir), builds a small program against each through CMake and pkg-config,
+and builds it once more from the source tree.
 
 ### API reference
 

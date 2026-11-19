@@ -1,0 +1,15 @@
+# Compile with -std=c++@JOSE_PC_STD@ or later: the library was built with
+# jose::expected as @JOSE_PC_EXPECTED@, and the define in Cflags makes the
+# headers agree.
+prefix=@JOSE_PC_PREFIX@
+includedir=@JOSE_PC_INCLUDEDIR@
+libdir=@JOSE_PC_LIBDIR@
+
+Name: jose2cpp
+Description: C++20/23 JOSE library: JWS, JWE, JWK and JWT
+URL: https://github.com/kevinbcarpenter/jose2cpp
+Version: @PROJECT_VERSION@
+Requires: libcrypto >= 3.0, nlohmann_json
+Requires.private: zlib
+Cflags: -I${includedir} -Dnsel_CONFIG_SELECT_EXPECTED=@JOSE_PC_EXPECTED@
+Libs: -L${libdir} -ljose2cpp

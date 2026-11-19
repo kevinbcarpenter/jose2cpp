@@ -20,7 +20,10 @@
       "displayName": "vcpkg (cross-platform, pinned deps)",
       "description": "Uses the vcpkg.json manifest. Requires VCPKG_ROOT to be set. Works identically on macOS and Ubuntu.",
       "inherits": "base",
-      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "VCPKG_MANIFEST_FEATURES": "tests"
+      }
     },
     {
       "name": "system",
