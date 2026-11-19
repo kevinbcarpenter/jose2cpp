@@ -2,7 +2,7 @@
 # runs jose_bench next to the go-jose runner in benchmarks/go.
 
 add_executable(jose_bench bench_main.cpp)
-target_link_libraries(jose_bench PRIVATE jose)
+target_link_libraries(jose_bench PRIVATE jose2cpp)
 target_compile_definitions(jose_bench PRIVATE JOSE_BENCH_KEYS="${CMAKE_CURRENT_SOURCE_DIR}/keys.json")
 
 get_property(_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)

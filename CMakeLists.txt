@@ -1,11 +1,16 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 project(jose2cpp VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+if(PROJECT_IS_TOP_LEVEL)
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+endif()
 
-option(JOSE_BUILD_TESTS "Build tests" ON)
+# Pulled into another build (add_subdirectory, FetchContent), jose2cpp builds
+# only the library: no tests, and no install rules unless asked for.
+option(JOSE_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
+option(JOSE_INSTALL "Generate install rules (the library, headers, CMake package and pkg-config file)" ${PROJECT_IS_TOP_LEVEL})
 option(JOSE_BUILD_BENCH "Build benchmarks" OFF)
 option(JOSE_BUILD_CLI "Build CLI tool" OFF)
 option(JOSE_FUZZ "Build fuzz targets (requires libFuzzer)" OFF)
@@ -93,7 +98,7 @@ configure_file(
     @ONLY
 )
 
-add_library(jose
+add_library(jose2cpp
     src/base64url.cpp
     src/algorithm.cpp
     src/secure_bytes.cpp
@@ -121,18 +126,30 @@ add_library(jose
     # Opt-in by include (jose/optional/jwks_fetcher.hpp); no extra dependencies.
     src/optional/jwks_fetcher.cpp
 )
+# The installed package exports jose2cpp::jose2cpp (and jose::jose, see
+# cmake/jose2cppConfig.cmake.in); the same names work from a source tree.
+add_library(jose2cpp::jose2cpp ALIAS jose2cpp)
+add_library(jose::jose ALIAS jose2cpp)
 
-target_include_directories(jose
+# Pre-1.0 every minor release may break the ABI (as with
+# SameMinorVersion below), so the soname carries major.minor:
+# libjose2cpp.so.0.1 on Linux. Not "jose": that name belongs to
+# latchset's C library (libjose, jose.pc) in Debian and Ubuntu.
+set_target_properties(jose2cpp PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+)
+
+target_include_directories(jose2cpp
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/include>
-        $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 # Only libcrypto is used (no TLS). zlib is an implementation detail.
-target_link_libraries(jose
+target_link_libraries(jose2cpp
     PUBLIC
         OpenSSL::Crypto
         nlohmann_json::nlohmann_json
@@ -143,16 +160,16 @@ target_link_libraries(jose
 if(JOSE_FUZZ AND JOSE_HAS_LIBFUZZER)
     # The instrumented library needs the coverage runtime in whatever links
     # it (the tests and the CLI too), so the link option is public.
-    target_compile_options(jose PRIVATE -fsanitize=fuzzer-no-link)
-    target_link_options(jose PUBLIC -fsanitize=fuzzer-no-link)
+    target_compile_options(jose2cpp PRIVATE -fsanitize=fuzzer-no-link)
+    target_link_options(jose2cpp PUBLIC -fsanitize=fuzzer-no-link)
 endif()
 
 if(_jose_use_std_expected)
-    target_compile_features(jose PUBLIC cxx_std_23)
-    target_compile_definitions(jose PUBLIC nsel_CONFIG_SELECT_EXPECTED=nsel_EXPECTED_STD)
+    target_compile_features(jose2cpp PUBLIC cxx_std_23)
+    target_compile_definitions(jose2cpp PUBLIC nsel_CONFIG_SELECT_EXPECTED=nsel_EXPECTED_STD)
 else()
-    target_compile_features(jose PUBLIC cxx_std_20)
-    target_compile_definitions(jose PUBLIC nsel_CONFIG_SELECT_EXPECTED=nsel_EXPECTED_NONSTD)
+    target_compile_features(jose2cpp PUBLIC cxx_std_20)
+    target_compile_definitions(jose2cpp PUBLIC nsel_CONFIG_SELECT_EXPECTED=nsel_EXPECTED_NONSTD)
 endif()
 
 # API reference: docs/Doxyfile with the output directory and version
@@ -195,50 +212,89 @@ if(JOSE_BUILD_BENCH)
     add_subdirectory(benchmarks)
 endif()
 
-# Install
-include(GNUInstallDirs)
-include(CMakePackageConfigHelpers)
-
 # jose-cli (PLAN.md Phase 3 item 8). The commands are in tools/cli.cpp so the
 # tests can run them in-process.
 if(JOSE_BUILD_CLI)
     add_executable(jose_cli tools/jose_cli.cpp tools/cli.cpp)
     set_target_properties(jose_cli PROPERTIES OUTPUT_NAME jose-cli)
-    target_link_libraries(jose_cli PRIVATE jose)
-    install(TARGETS jose_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    target_link_libraries(jose_cli PRIVATE jose2cpp)
 endif()
 
-install(TARGETS jose EXPORT joseTargets
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
-install(DIRECTORY include/jose DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    PATTERN "*.in" EXCLUDE
-)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/include/jose/version.hpp
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/jose
-)
-install(EXPORT joseTargets
-    FILE joseTargets.cmake
-    NAMESPACE jose::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/jose
-)
+# Install: find_package(jose2cpp) and pkg-config jose2cpp. Package, library
+# and pkg-config names are all jose2cpp; the headers stay under <jose/...>
+# and the namespace is jose.
+if(JOSE_INSTALL)
+    include(GNUInstallDirs)
+    include(CMakePackageConfigHelpers)
+    set(_jose_cmake_dir ${CMAKE_INSTALL_LIBDIR}/cmake/jose2cpp)
 
-# Config file pulls in OpenSSL/nlohmann_json/ZLIB via find_dependency so that
-# find_package(jose) works on a clean machine.
-configure_package_config_file(
-    cmake/joseConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/joseConfig.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/jose
-)
-write_basic_package_version_file(
-    ${CMAKE_CURRENT_BINARY_DIR}/joseConfigVersion.cmake
-    # Pre-1.0, minor bumps are breaking (SemVer), so 0.x and 0.y must not
-    # satisfy each other. Switch to SameMajorVersion at 1.0.
-    COMPATIBILITY SameMinorVersion
-)
-install(FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/joseConfig.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/joseConfigVersion.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/jose
-)
+    if(JOSE_BUILD_CLI)
+        install(TARGETS jose_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
+
+    install(TARGETS jose2cpp EXPORT jose2cppTargets
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+    install(DIRECTORY include/jose DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        PATTERN "*.in" EXCLUDE
+    )
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/include/jose/version.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/jose
+    )
+    install(EXPORT jose2cppTargets
+        FILE jose2cppTargets.cmake
+        NAMESPACE jose2cpp::
+        DESTINATION ${_jose_cmake_dir}
+    )
+
+    # The config file pulls in OpenSSL, nlohmann_json and ZLIB with
+    # find_dependency, so find_package(jose2cpp) works on a clean machine.
+    configure_package_config_file(
+        cmake/jose2cppConfig.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/jose2cppConfig.cmake
+        INSTALL_DESTINATION ${_jose_cmake_dir}
+    )
+    write_basic_package_version_file(
+        ${CMAKE_CURRENT_BINARY_DIR}/jose2cppConfigVersion.cmake
+        # Pre-1.0, minor bumps are breaking (SemVer), so 0.x and 0.y must not
+        # satisfy each other. Switch to SameMajorVersion at 1.0, along with
+        # the SOVERSION above.
+        COMPATIBILITY SameMinorVersion
+    )
+    install(FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/jose2cppConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/jose2cppConfigVersion.cmake
+        DESTINATION ${_jose_cmake_dir}
+    )
+
+    # pkg-config. With the usual relative install dirs the prefix is found
+    # from the .pc file's own location, so `cmake --install --prefix`
+    # anywhere gives a working file. An absolute libdir or includedir (Nix,
+    # some distro builds) is written as it is, and that file isn't
+    # relocatable.
+    if(IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}" OR IS_ABSOLUTE "${CMAKE_INSTALL_INCLUDEDIR}")
+        set(JOSE_PC_PREFIX "${CMAKE_INSTALL_PREFIX}")
+        set(JOSE_PC_INCLUDEDIR "${CMAKE_INSTALL_FULL_INCLUDEDIR}")
+        set(JOSE_PC_LIBDIR "${CMAKE_INSTALL_FULL_LIBDIR}")
+    else()
+        file(RELATIVE_PATH _jose_pc_to_prefix "/${CMAKE_INSTALL_LIBDIR}/pkgconfig" "/")
+        string(REGEX REPLACE "/$" "" _jose_pc_to_prefix "${_jose_pc_to_prefix}")
+        set(JOSE_PC_PREFIX "\${pcfiledir}/${_jose_pc_to_prefix}")
+        set(JOSE_PC_INCLUDEDIR "\${prefix}/${CMAKE_INSTALL_INCLUDEDIR}")
+        set(JOSE_PC_LIBDIR "\${prefix}/${CMAKE_INSTALL_LIBDIR}")
+    endif()
+    if(_jose_use_std_expected)
+        set(JOSE_PC_EXPECTED nsel_EXPECTED_STD)
+        set(JOSE_PC_STD 23)
+    else()
+        set(JOSE_PC_EXPECTED nsel_EXPECTED_NONSTD)
+        set(JOSE_PC_STD 20)
+    endif()
+    configure_file(cmake/jose2cpp.pc.in ${CMAKE_CURRENT_BINARY_DIR}/jose2cpp.pc @ONLY)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/jose2cpp.pc
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
+    )
+endif()

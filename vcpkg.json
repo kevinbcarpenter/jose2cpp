@@ -1,18 +1,27 @@
 {
   "name": "jose2cpp",
   "version": "0.1.0",
-  "description": "Modern C++20 JOSE (JSON Object Signing and Encryption) library",
-  "homepage": "https://github.com/kcarpenter/jose2cpp",
+  "description": "C++20/23 JOSE library: JWS, JWE, JWK and JWT, with go-jose v4 parity",
+  "homepage": "https://github.com/kevinbcarpenter/jose2cpp",
+  "license": "MIT",
   "dependencies": [
     {
       "name": "openssl",
-      "version>=": "3.0.0"
+      "version>=": "3.0.2"
     },
     "nlohmann-json",
-    "zlib",
-    {
-      "name": "catch2",
-      "version>=": "3.0.0"
+    "zlib"
+  ],
+  "features": {
+    "tests": {
+      "description": "Build the Catch2 test suite",
+      "dependencies": [
+        {
+          "name": "catch2",
+          "version>=": "3.0.1"
+        }
+      ]
     }
-  ]
+  },
+  "builtin-baseline": "9eec002df1cd109f8f104cd966a763daf9751489"
 }

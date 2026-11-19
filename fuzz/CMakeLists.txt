@@ -13,7 +13,7 @@ set(JOSE_FUZZ_TARGETS base64url jwk jws jwe jwt inflate)
 
 foreach(name IN LISTS JOSE_FUZZ_TARGETS)
     add_executable(fuzz_${name} fuzz_${name}.cpp)
-    target_link_libraries(fuzz_${name} PRIVATE jose)
+    target_link_libraries(fuzz_${name} PRIVATE jose2cpp)
     # fuzz_inflate reaches the internal inflater.
     target_include_directories(fuzz_${name} PRIVATE ${PROJECT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR})
     set(corpus ${CMAKE_CURRENT_SOURCE_DIR}/corpus/${name})

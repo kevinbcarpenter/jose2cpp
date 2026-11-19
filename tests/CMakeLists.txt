@@ -29,7 +29,7 @@ target_compile_definitions(jose_tests PRIVATE
     JOSE_TEST_VECTORS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/vectors"
 )
 
-target_link_libraries(jose_tests PRIVATE jose Catch2::Catch2WithMain)
+target_link_libraries(jose_tests PRIVATE jose2cpp Catch2::Catch2WithMain)
 
 include(CTest)
 include(Catch)
@@ -48,7 +48,7 @@ endif()
 # test_interop.cpp always checks the checked-in vectors in vectors/interop/.
 # jose_interop_gen writes jose2cpp-produced vectors for go-jose to verify.
 add_executable(jose_interop_gen interop/gen_jose2cpp.cpp)
-target_link_libraries(jose_interop_gen PRIVATE jose)
+target_link_libraries(jose_interop_gen PRIVATE jose2cpp)
 
 if(JOSE_INTEROP_GO)
     find_program(GO_EXECUTABLE go REQUIRED)

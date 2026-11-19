@@ -36,6 +36,24 @@ jobs:
       - name: Test
         run: ctest --preset system --output-on-failure
 
+  # A downstream project (tests/package) built against an installed
+  # jose2cpp, static and shared, through CMake and pkg-config, and against
+  # the source tree as FetchContent would add it.
+  package:
+    name: Packaging (install, find_package, pkg-config, add_subdirectory)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            nlohmann-json3-dev libssl-dev zlib1g-dev cmake ninja-build g++ pkg-config
+
+      - name: Install and consume
+        run: tests/package/run.sh "$RUNNER_TEMP/package"
+
   fuzz:
     name: Fuzz (clang 18, libFuzzer, ASan+UBSan)
     runs-on: ubuntu-24.04
