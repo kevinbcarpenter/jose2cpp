@@ -9,6 +9,8 @@ option(JOSE_BUILD_TESTS "Build tests" ON)
 option(JOSE_BUILD_BENCH "Build benchmarks" OFF)
 option(JOSE_BUILD_CLI "Build CLI tool" OFF)
 option(JOSE_FUZZ "Build fuzz targets (requires libFuzzer)" OFF)
+option(JOSE_BUILD_DOCS "Add a `jose_docs` target that builds the API reference with Doxygen" OFF)
+option(JOSE_DOCS_WARN_AS_ERROR "Fail the `jose_docs` target on any Doxygen warning" OFF)
 option(JOSE_INTEROP_GO "Add live go-jose interop tests to ctest (requires Go and network access to fetch go-jose)" OFF)
 set(JOSE_USE_STD_EXPECTED AUTO CACHE STRING
     "Use std::expected (requires C++23): AUTO, ON, or OFF (OFF = vendored expected-lite on C++20)")
@@ -151,6 +153,31 @@ if(_jose_use_std_expected)
 else()
     target_compile_features(jose PUBLIC cxx_std_20)
     target_compile_definitions(jose PUBLIC nsel_CONFIG_SELECT_EXPECTED=nsel_EXPECTED_NONSTD)
+endif()
+
+# API reference: docs/Doxyfile with the output directory and version
+# filled in. Doxygen runs from the source directory, where the Doxyfile's
+# relative paths point.
+if(JOSE_BUILD_DOCS)
+    find_package(Doxygen REQUIRED)
+    set(JOSE_DOCS_DIR ${CMAKE_CURRENT_BINARY_DIR}/docs)
+    if(JOSE_DOCS_WARN_AS_ERROR)
+        set(_jose_docs_warn FAIL_ON_WARNINGS)
+    else()
+        set(_jose_docs_warn NO)
+    endif()
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile.jose CONTENT
+"@INCLUDE = \"${CMAKE_CURRENT_SOURCE_DIR}/docs/Doxyfile\"
+OUTPUT_DIRECTORY = \"${JOSE_DOCS_DIR}\"
+PROJECT_NUMBER = ${PROJECT_VERSION}
+WARN_AS_ERROR = ${_jose_docs_warn}
+")
+    add_custom_target(jose_docs
+        COMMAND Doxygen::doxygen ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile.jose
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Building the API reference in ${JOSE_DOCS_DIR}/html"
+        VERBATIM
+    )
 endif()
 
 if(JOSE_BUILD_TESTS)

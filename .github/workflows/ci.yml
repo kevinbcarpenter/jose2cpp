@@ -80,3 +80,27 @@ jobs:
         with:
           name: fuzz-artifacts
           path: artifacts/
+
+  docs:
+    name: API reference (Doxygen, no warnings)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Doxygen
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends doxygen
+
+      # Every public symbol must be documented and every reference must
+      # resolve: any warning fails the job.
+      - name: Build the API reference
+        run: |
+          doxygen --version
+          ( cat docs/Doxyfile; echo "WARN_AS_ERROR = FAIL_ON_WARNINGS" ) | doxygen -
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-reference
+          path: build/docs/html/
+          retention-days: 14

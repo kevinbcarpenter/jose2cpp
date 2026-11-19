@@ -495,8 +495,26 @@ or use the **vcpkg** option above to get Catch2 3.x. OpenSSL 3 and nlohmann-json
 | `JOSE_BUILD_BENCH`  | `OFF`   | Build benchmarks                     |
 | `JOSE_BUILD_CLI`    | `OFF`   | Build `jose-cli` (see [Command line](#command-line)) |
 | `JOSE_FUZZ`         | `OFF`   | Build the fuzz targets (see [Fuzzing](#fuzzing)) |
+| `JOSE_BUILD_DOCS`   | `OFF`   | Add a `jose_docs` target that builds the API reference (see [API reference](#api-reference)) |
+| `JOSE_DOCS_WARN_AS_ERROR` | `OFF` | Make the `jose_docs` target fail on any Doxygen warning |
 | `JOSE_INTEROP_GO`   | `OFF`   | Add live go-jose interop tests to ctest (needs Go; see [tests/interop](tests/interop/README.md)) |
 | `JOSE_USE_STD_EXPECTED` | `AUTO` | `jose::expected` implementation: `AUTO` probes for C++23 `std::expected` and falls back to the vendored [expected-lite](https://github.com/martinmoene/expected-lite) on C++20; `ON`/`OFF` force one. The choice is exported as a public compile definition so consumers always match the library build. |
+
+### API reference
+
+Every public header is documented for Doxygen (tested with 1.9.8 and 1.18).
+From the repository root:
+
+```sh
+doxygen docs/Doxyfile              # writes build/docs/html/index.html
+```
+
+or configure with `-DJOSE_BUILD_DOCS=ON` and run `cmake --build <dir> --target jose_docs`,
+which writes to `<dir>/docs/html` and stamps the version. The vendored
+expected-lite and the `detail` namespaces are left out. CI builds the
+reference on every run and fails on any warning, so an undocumented public
+function or a broken reference doesn't get merged. The built pages are kept
+as a build artifact for two weeks.
 
 ### Fuzzing
 

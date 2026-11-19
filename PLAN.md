@@ -425,7 +425,7 @@ High-level JWT API and production readiness.
 7. ✅ Optional async JWKS URL fetcher with pluggable HTTP backend, caching, TTL refresh (see §JWKS Fetcher)
 8. ✅ CLI tool (`jose-cli`): sign, verify, encrypt, decrypt, expand, generate-key (see §CLI)
 9. ✅ Fuzz targets (libFuzzer): `jwk::from_json`, `jws::parse`, `jwe::parse`, the `jwt::parse_*` and registered claims, base64url, DEFLATE inflation (see §Fuzz Testing)
-10. API documentation (Doxygen)
+10. ✅ API documentation (Doxygen) (see §API Documentation)
 11. Benchmarks vs. go-jose (sign/verify throughput, parse latency)
 12. ✅ Async opaque keys for JWT: build with an `async_opaque_signer` and parse with `async_opaque_verifier` / `async_opaque_key_decrypter` (`claims_async`, `nested_jwt::decrypt_async`), reusing the allowlists and `understood` given at parse time so a caller can't widen them on a second call. (see §Async Opaque Keys)
 
@@ -740,3 +740,13 @@ Phase 3 item 9. libFuzzer targets in `fuzz/`, built with `-DJOSE_FUZZ=ON`.
 - **Found in review: deep JSON.** A JWS or JWE JSON with an unprotected header nested about 20,000 levels (about 40 KB) overflowed the stack under ASan: `header::from_json` copies the value, and nlohmann's copy and serialization recurse. libFuzzer never got there, because `max_len` follows the largest seed (about 4 KB). Fixed in `internal::parse_json_strict`, which every library parse goes through: nesting more than 128 levels below the top is `errc::serialization_error`. Regression tests in `tests/test_limits.cpp` (each kind of token, a JWK, a JWK Set, JWT claims, and the 128/129 boundary); with the limit lifted they crash under ASan.
 
 Fuzz targets must never crash, throw, or leak on any input. `std::expected` error returns are the expected failure mode. Any abort, ASAN violation, or undefined behavior is a bug.
+
+## API Documentation
+
+Phase 3 item 10. Doxygen, configured by `docs/Doxyfile`, with `docs/mainpage.md` as the front page.
+
+- **Scope.** Every header under `include/jose` except `detail/` (the vendored expected-lite); `jose::detail` and `jose::*::detail` are excluded too. Private members aren't extracted. The README isn't used as the main page: its `#heading` links and relative links to other files don't resolve in Doxygen, and the README is written for GitHub.
+- **Comments.** The headers already explained themselves in `//` comments, so those became `///` (blocks above a declaration), `///<` (after a member) and `@file` (each file's opening block); indented examples became `@code` blocks and the two error tables became Markdown tables. Comments inside function bodies and section dividers (`// --- Parsing ---`) were left as they were; the parsing and verifying rules that used to sit under the dividers in jws.hpp and jwe.hpp moved into the class descriptions, so they appear in the reference. Overload sets share one comment through `///@{ ... ///@}` with `DISTRIBUTE_GROUP_DOC`. The rest got new comments: the 278 symbols Doxygen reported as undocumented, plus the `errc` values and the namespaces, each checked against the implementation (the `errc` values against where each is returned, for instance).
+- **Warnings are errors in CI.** `WARN_IF_UNDOCUMENTED` is on, and a `docs` job on Ubuntu 24.04 (Doxygen 1.9.8, the oldest version tested) builds with `WARN_AS_ERROR = FAIL_ON_WARNINGS` and uploads the HTML as an artifact. Doxygen only warns about free functions in files that have an `@file` block, so every header has one. Doxygen 1.18 (Homebrew) is also warning-free.
+- **CMake.** `-DJOSE_BUILD_DOCS=ON` adds a `jose_docs` target (named so it can't clash with a parent project's `docs`) that writes a Doxyfile into the build directory (`@INCLUDE` of `docs/Doxyfile`, the output directory, `PROJECT_NUMBER` from `project(VERSION)`) and runs Doxygen from the source directory. `-DJOSE_DOCS_WARN_AS_ERROR=ON` sets `FAIL_ON_WARNINGS`. It's off by default, since a newer Doxygen may warn about things this one doesn't.
+- **Not done.** The reference isn't published (GitHub Pages or similar); that's a decision for the repository owner. Examples in the comments aren't compiled.
