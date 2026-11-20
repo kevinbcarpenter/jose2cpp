@@ -520,8 +520,7 @@ target_link_libraries(my_app PRIVATE jose2cpp::jose2cpp)   # jose::jose works to
 ```
 
 Or build it as part of your project with FetchContent, which skips the
-tests and the install rules. `v0.1.0` is the first release tag; until it's
-pushed, use `develop`:
+tests and the install rules:
 
 ```cmake
 include(FetchContent)
